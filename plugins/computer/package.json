@@ -1,0 +1,11 @@
+{
+  "name": "@vesper/plugin-computer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The computer tool as a plugin: a helper agent drives the workspace's desktop so screenshots stay out of the main context.",
+  "license": "MIT",
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

@@ -1,0 +1,4 @@
+#!/command/with-contenv sh
+# The application: reads COMMANDCODE_API_KEY and the OGB_* settings of the image from the container environment (never logged),
+# serves the page and the API on OGB_PORT, talks to the desk-daemon over its socket. SIGTERM closes the sessions in order.
+exec node /opt/ogb/packages/app/src/main.ts

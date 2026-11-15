@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/agents-md",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Generates the per-session AGENTS.md: who the agent is, its workspace, channel order, tools, safety, memo rules.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/profiles": "*"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/event-journal",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Per-session append-only event log with sequence numbers, replay and resume.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

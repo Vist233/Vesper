@@ -1,0 +1,15 @@
+{
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "Hand checked work packages to the other agents on this machine (search, peek, pull, publish) through one shared store.",
+  "license": "MIT",
+  "keywords": ["handoff", "skills", "multi-agent"],
+  "extensions": {
+    "vesper": {
+      "tools": "dist/tools.js",
+      "promptSection": "prompt.md",
+      "effects": ["exec"],
+      "defaultEnabled": true
+    }
+  }
+}

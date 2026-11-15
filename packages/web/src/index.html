@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vesper</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#message">Skip to the message box</a>
+    <div class="app" id="app">
+      <header class="top" id="top">
+        <button id="rail-toggle" type="button" class="icon railicon" aria-label="Fold the bots away" aria-expanded="true" aria-controls="rail">
+          <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2.5" /><path d="M7.5 3.5v13" /><path class="fold-in" d="M13.5 8l-2 2 2 2" /><path class="fold-out" d="M11.5 8l2 2-2 2" /></svg>
+        </button>
+        <span class="mark">
+          <svg class="star on" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 0.5C8.5 4.9 11.1 7.5 15.5 8C11.1 8.5 8.5 11.1 8 15.5C7.5 11.1 4.9 8.5 0.5 8C4.9 7.5 7.5 4.9 8 0.5Z" /></svg>
+          <h1>Vesper</h1>
+        </span>
+        <span id="session-title" class="session-title" hidden>
+          <span id="bot-star" class="botstar"></span>
+          <button id="bot-name" type="button" class="botname" title="Rename this bot"></button>
+          <input id="bot-rename" class="botrename" maxlength="80" aria-label="New name of this bot" autocomplete="off" hidden />
+          <span id="bot-summary" class="botsummary"></span>
+        </span>
+        <span class="spacer"></span>
+        <button id="desk-pill" type="button" class="deskchip" hidden aria-pressed="false" aria-label="Desk">
+          <span class="thumb" id="desk-thumb"></span>
+          <span class="chip-text"><span class="chip-title">Desk</span><span class="chip-host" id="desk-host"></span></span>
+          <svg class="star" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 0.5C8.5 4.9 11.1 7.5 15.5 8C11.1 8.5 8.5 11.1 8 15.5C7.5 11.1 4.9 8.5 0.5 8C4.9 7.5 7.5 4.9 8 0.5Z" /></svg>
+        </button>
+        <form id="token-form" class="token" hidden>
+          <label for="token">Access token</label>
+          <input id="token" type="password" autocomplete="off" />
+          <button type="submit">Use token</button>
+        </form>
+      </header>
+      <div id="banners" class="banners" role="status" aria-live="polite"></div>
+      <div class="body" id="body">
+        <nav id="rail" class="rail" aria-label="Bots">
+          <button id="new-bot" type="button" class="newbot"><span aria-hidden="true">+</span> New bot</button>
+          <ul id="sessions" class="sessions"></ul>
+        </nav>
+        <main class="main">
+          <div id="drop" class="drop" hidden>Drop files to attach them</div>
+          <div id="scroller" class="scroller">
+            <div id="empty" class="empty">
+              <img class="brand" src="/vesper-logo.png" width="280" height="141" alt="Vesper" />
+              <h2 id="greeting">Good evening.</h2>
+              <p id="hint" class="hint">Make a bot and give it a job. It keeps working and tells you when it needs you.</p>
+              <button id="empty-new" type="button" class="primary">New bot</button>
+            </div>
+            <ol id="timeline" class="timeline" role="log" aria-live="polite" aria-label="Conversation"></ol>
+          </div>
+          <div class="dock">
+            <ul id="pinned" class="pinned" aria-label="Waiting for you"></ul>
+            <p id="now" class="now" data-tone="idle" role="status" hidden>
+              <svg class="star" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 0.5C8.5 4.9 11.1 7.5 15.5 8C11.1 8.5 8.5 11.1 8 15.5C7.5 11.1 4.9 8.5 0.5 8C4.9 7.5 7.5 4.9 8 0.5Z" /></svg>
+              <span id="now-label" class="now-label"></span>
+              <span id="now-detail" class="now-detail"></span>
+              <span id="now-since" class="now-since"></span>
+            </p>
+            <form id="composer" class="composer">
+              <ul id="tray" class="tray" hidden aria-label="Files to send"></ul>
+              <label for="message" class="sr">Message to the agent</label>
+              <textarea id="message" rows="1" placeholder="Tell me what to do"></textarea>
+              <div class="bar">
+                <button id="attach" type="button" class="icon attach" aria-label="Attach files">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+                </button>
+                <input id="file-input" type="file" multiple hidden />
+                <span class="spacer"></span>
+                <button id="send" type="submit" class="round" aria-label="Send">↑</button>
+              </div>
+            </form>
+            <form id="handback-bar" class="handback-bar" hidden>
+              <label for="handback-note" class="sr">What did you do? The agent is told.</label>
+              <input id="handback-note" maxlength="500" placeholder="What did you do? (optional)" autocomplete="off" />
+              <button id="desk-handback-button" type="submit" class="primary">Hand back</button>
+            </form>
+          </div>
+        </main>
+        <hr id="divider" class="divider" aria-orientation="vertical" aria-label="Resize the desk" aria-valuenow="600" aria-valuemin="480" aria-valuemax="760" tabindex="0" hidden />
+        <section id="desk" class="desk" hidden aria-label="Desk: the agent's browser and desktop">
+          <div class="desk-head">
+            <svg class="star" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 0.5C8.5 4.9 11.1 7.5 15.5 8C11.1 8.5 8.5 11.1 8 15.5C7.5 11.1 4.9 8.5 0.5 8C4.9 7.5 7.5 4.9 8 0.5Z" /></svg>
+            <strong id="desk-title">Desk</strong>
+            <span id="desk-mode" class="chip">Connecting</span>
+            <span class="spacer"></span>
+            <button id="desk-upload" type="button" hidden>Upload file</button>
+            <input id="desk-file" type="file" hidden />
+            <button id="desk-type-toggle" type="button" hidden aria-expanded="false">Send text</button>
+            <button id="desk-handback-header" type="button" class="primary" hidden>Hand back</button>
+            <button id="desk-reconnect" type="button" class="primary" hidden>Reconnect</button>
+            <button id="desk-takeover" type="button" class="primary">Take over</button>
+            <button id="desk-collapse" type="button" class="icon" aria-label="Fold the desk into the top bar">✕</button>
+          </div>
+          <div id="desk-screen" class="desk-screen"></div>
+          <form id="desk-type" class="desk-row" hidden autocomplete="off">
+            <label for="type-text" class="sr">Text to type into the desktop</label>
+            <input id="type-text" type="password" autocomplete="off" placeholder="Type text here, then Enter" />
+            <button id="type-show" type="button" aria-pressed="false">Show</button>
+            <button id="type-send" type="submit">Type it</button>
+          </form>
+          <p id="desk-hint" class="muted small" hidden>On a Mac use Ctrl, not Cmd, for shortcuts inside the desktop (Ctrl+C, Ctrl+V, Ctrl+A). Text with Chinese or other non-ASCII characters goes into the focused field of the page, not into the address bar.</p>
+          <p id="desk-upload-note" class="muted small" hidden></p>
+          <p id="desk-note" class="muted small"></p>
+        </section>
+      </div>
+    </div>
+    <dialog id="bot-sheet" class="sheet" aria-labelledby="bot-sheet-title">
+      <form id="bot-form" method="dialog">
+        <h2 id="bot-sheet-title">New bot</h2>
+        <fieldset class="stars">
+          <legend>Star</legend>
+          <div id="star-choices" class="star-choices"></div>
+        </fieldset>
+        <label for="bot-title">Name</label>
+        <input id="bot-title" maxlength="80" autocomplete="off" required />
+        <label for="bot-job">What is it for? <span class="muted">(optional, sent as its first message)</span></label>
+        <textarea id="bot-job" rows="3" maxlength="4000" placeholder="Watch my inbox every morning and tell me what needs an answer"></textarea>
+        <div class="buttons">
+          <button id="bot-cancel" type="button" value="cancel">Cancel</button>
+          <button id="bot-create" type="submit" class="primary">Create</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

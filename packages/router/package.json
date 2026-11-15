@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/router",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Pure state machine that turns signals into deliveries (steer, start a run, stop).",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

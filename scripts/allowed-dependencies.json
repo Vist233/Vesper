@@ -1,0 +1,99 @@
+{
+  "comment": "The allowed-dependency table of docs/07 section 2. A package may import another package only through its public entry ('@vesper/x') and only if listed here. 'externals' lists the npm packages a package may import; node: built-ins are allowed everywhere except in 'contracts'. Test files may also import '@vesper/x/testing' for the packages in 'dependencies'. 'plugins.overrides' adds npm packages for one named plugin (the handoff plugin wraps the handoff library). 'testDependencies' lists packages that only test files and src/testing may import (the audit of 2026-11-13: the table lists what src really imports).",
+  "packages": {
+    "contracts": {
+      "dependencies": [],
+      "externals": [],
+      "builtins": false
+    },
+    "event-journal": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": true
+    },
+    "router": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": false
+    },
+    "secrets": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": true
+    },
+    "model-registry": {
+      "dependencies": ["contracts", "secrets"],
+      "externals": ["sakura-agent"],
+      "builtins": true
+    },
+    "profiles": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": true
+    },
+    "agents-md": {
+      "dependencies": ["profiles"],
+      "externals": [],
+      "builtins": false
+    },
+    "plugin-host": {
+      "dependencies": ["contracts"],
+      "externals": ["sakura-agent"],
+      "builtins": true
+    },
+    "session-store": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": true
+    },
+    "workspace-client": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": true
+    },
+    "desk-daemon": {
+      "dependencies": ["contracts"],
+      "externals": [],
+      "builtins": true,
+      "testDependencies": ["workspace-client"]
+    },
+    "session-runtime": {
+      "dependencies": ["contracts", "router", "event-journal", "model-registry", "profiles", "agents-md", "plugin-host", "session-store"],
+      "externals": ["sakura-agent"],
+      "builtins": true,
+      "testDependencies": ["secrets", "workspace-client"]
+    },
+    "gateway": {
+      "dependencies": ["contracts", "session-runtime"],
+      "externals": [],
+      "builtins": true,
+      "testDependencies": ["event-journal", "workspace-client"]
+    },
+    "web": {
+      "dependencies": [],
+      "externals": [],
+      "builtins": false,
+      "testDependencies": ["contracts"]
+    },
+    "connectors": {
+      "dependencies": ["contracts"],
+      "externals": ["sakura-agent"],
+      "builtins": true
+    },
+    "app": {
+      "dependencies": ["contracts", "gateway", "model-registry", "plugin-host", "profiles", "secrets", "session-runtime", "session-store", "workspace-client"],
+      "externals": [],
+      "builtins": true
+    }
+  },
+  "plugins": {
+    "dependencies": ["contracts", "connectors"],
+    "externals": ["sakura-agent"],
+    "builtins": true,
+    "overrides": {
+      "handoff": {
+        "externals": ["step-by-step-handoff-mcp"]
+      }
+    }
+  }
+}

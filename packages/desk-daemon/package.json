@@ -1,0 +1,21 @@
+{
+  "name": "@vesper/desk-daemon",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Separate process: per workspace a display, a headed browser and a take-over bridge, served over a local socket.",
+  "license": "MIT",
+  "bin": {
+    "desk-daemon": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  },
+  "devDependencies": {
+    "@vesper/workspace-client": "*"
+  }
+}

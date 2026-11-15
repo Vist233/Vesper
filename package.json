@@ -1,0 +1,44 @@
+{
+  "name": "vesper",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "An always-on personal agent runtime: many sessions, each with its own desktop and browser, controlled from a plain web page.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/*",
+    "plugins/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "coverage": "vitest run --coverage --coverage.provider=v8",
+    "boundaries": "node scripts/check-boundaries.mjs",
+    "scan": "node scripts/scan-secrets.mjs",
+    "untested": "node scripts/untested-exports.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "biome lint",
+    "format": "biome format --write",
+    "format:check": "biome format",
+    "check": "npm run boundaries && npm run typecheck && npm run lint && npm run format:check && npm test",
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "test:web": "vitest run --config vitest.web.config.ts",
+    "journey": "docker exec ogb-box node /opt/ogb/test/journey/run.mjs"
+  },
+  "dependencies": {
+    "sakura-agent": "0.1.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^3.2.7",
+    "esbuild": "^0.28.2",
+    "fast-check": "^4.10.2",
+    "playwright-core": "1.65.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

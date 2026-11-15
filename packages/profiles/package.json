@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/profiles",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A profile is a named list of plugins and settings for a new session. The safety floor (review, redaction) cannot be switched off from the page.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

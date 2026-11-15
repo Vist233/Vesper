@@ -1,0 +1,22 @@
+{
+  "name": "@vesper/app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The composition root: reads the environment, builds the runtime, the plugin host, the workspace client and the gateway, serves the page, starts and stops them in order.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*",
+    "@vesper/gateway": "*",
+    "@vesper/model-registry": "*",
+    "@vesper/plugin-host": "*",
+    "@vesper/profiles": "*",
+    "@vesper/secrets": "*",
+    "@vesper/session-runtime": "*",
+    "@vesper/session-store": "*",
+    "@vesper/workspace-client": "*"
+  }
+}

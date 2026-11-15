@@ -1,0 +1,12 @@
+{
+  "name": "@vesper/contracts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Shared types, the versioned event schema and error kinds. Imports nothing.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  }
+}

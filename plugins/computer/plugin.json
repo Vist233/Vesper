@@ -1,0 +1,14 @@
+{
+  "name": "computer",
+  "version": "0.1.0",
+  "description": "Use the workspace's desktop (pointer and keyboard) through a helper agent. Last resort, after commands, APIs and the browser.",
+  "license": "MIT",
+  "extensions": {
+    "vesper": {
+      "tools": "dist/tools.js",
+      "promptSection": "prompt.md",
+      "effects": ["exec"],
+      "defaultEnabled": true
+    }
+  }
+}

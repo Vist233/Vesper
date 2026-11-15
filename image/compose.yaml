@@ -1,0 +1,39 @@
+# The version 1 box. Everything is named ogb-* so it is easy to find and remove by exact name.
+#   docker compose -f image/compose.yaml up -d --build
+# Ports are bound to 127.0.0.1 only: the page is at http://127.0.0.1:8787/ and has no login (owner decision 11).
+# The model key is passed through from the shell that runs compose and is never written to a file:
+#   COMMANDCODE_API_KEY=... docker compose -f image/compose.yaml up -d
+name: ogb
+services:
+  box:
+    image: ogb-box:dev
+    container_name: ogb-box
+    build:
+      context: ..
+      dockerfile: image/Dockerfile
+    restart: unless-stopped
+    cpus: 4
+    mem_limit: 8g # the owner, 2026-11-15: 4 GB left no room for 8 desktops plus a test browser
+    memswap_limit: 8g
+    pids_limit: 4096
+    shm_size: 1gb # Chromium keeps shared memory in /dev/shm; the default 64 MB is too small for several windows
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - COMMANDCODE_API_KEY # no value here: compose copies it from the environment of the command
+      - OGB_RUN_TURNS
+      - OGB_RUN_TOKENS
+      - OGB_RUN_SECONDS
+      - TZ # the person's time zone for scheduled 'daily HH:MM' jobs (for example Asia/Singapore); unset is UTC
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ogb-data:/data
+    networks:
+      - ogb-net
+volumes:
+  ogb-data:
+    name: ogb-data
+networks:
+  ogb-net:
+    name: ogb-net

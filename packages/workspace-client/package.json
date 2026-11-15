@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/workspace-client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Typed client of the desk-daemon: speaks the versioned JSON-lines protocol over a local socket and is a WorkspaceHost.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

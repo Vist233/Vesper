@@ -1,0 +1,18 @@
+{
+  "name": "@vesper/gateway",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "HTTP API, server-sent events with Last-Event-ID, live-view and take-over proxy, and the static page. Thin on purpose.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*",
+    "@vesper/event-journal": "*",
+    "@vesper/session-runtime": "*",
+    "@vesper/workspace-client": "*"
+  }
+}

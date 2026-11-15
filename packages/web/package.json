@@ -1,0 +1,17 @@
+{
+  "name": "@vesper/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The plain page: HTML, CSS and a few ES modules, no framework and no build step. Served as static files by the gateway.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.js",
+    "./model": "./src/model.js",
+    "./sse": "./src/sse.js",
+    "./client": "./src/client.js"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

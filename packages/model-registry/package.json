@@ -1,0 +1,17 @@
+{
+  "name": "@vesper/model-registry",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Named models from one config file to ready LlmClients. Keys come only through secrets.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*",
+    "@vesper/secrets": "*",
+    "sakura-agent": "0.1.2"
+  }
+}

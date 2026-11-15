@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/session-store",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Where session files and the session index live: create, list, get, update, delete.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

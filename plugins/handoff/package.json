@@ -1,0 +1,12 @@
+{
+  "name": "@vesper/plugin-handoff",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The handoff tool as a plugin: agents hand each other checked work packages through one shared store.",
+  "license": "MIT",
+  "dependencies": {
+    "@vesper/contracts": "*",
+    "step-by-step-handoff-mcp": "0.3.0"
+  }
+}

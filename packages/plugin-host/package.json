@@ -1,0 +1,16 @@
+{
+  "name": "@vesper/plugin-host",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Plugin manifests (Codex shape plus extensions.vesper), marketplace with hash pinning, loader, PluginContext. Knows no session.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*",
+    "sakura-agent": "0.1.2"
+  }
+}

@@ -1,0 +1,858 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""deskview —— X 桌面 MJPEG 直播 + 结构化状态接口（零第三方依赖）。
+
+两种采集模式（同一个进程内自动切换）：
+  本地 X 显示：   deskview --display :98
+  容器内 X 显示： deskview --container agent-desktop --display :98
+
+为什么用 MJPEG：浏览器原生支持 multipart/x-mixed-replace，一个 <img> 就能播，
+不依赖 WebSocket / 前端 JS / noVNC，代理和缓存都不会把它弄成"页面能开、画面没有"。
+
+HTTP 端点：
+  /             HTML 页面（MJPEG 内嵌）
+  /stream.mjpg  MJPEG 流
+  /snap.jpg     最近一帧 JPEG（可加 ?ts= 破缓存）
+  /state        结构化状态 JSON（窗口列表/分辨率/帧计数/健康）
+  /metrics      Prometheus 文本指标
+  /healthz      健康检查（200 ok / 503 degraded）
+
+退出码：0 正常，2 参数/环境错误（找不到 ffmpeg、docker、显示器）。
+"""
+import argparse
+import base64
+import hmac
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+VERSION = "1.0.0"
+ISO = "%Y-%m-%dT%H:%M:%S%z"
+
+
+# --------------------------------------------------------------------------- #
+# 基础工具
+# --------------------------------------------------------------------------- #
+def log(msg):
+    sys.stderr.write("%s [deskview] %s\n" % (time.strftime("%H:%M:%S"), msg))
+    sys.stderr.flush()
+
+
+def run(cmd, timeout=10.0, env=None):
+    """跑一个命令，永不抛异常。"""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    except Exception as exc:  # noqa: BLE001
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def find_ffmpeg(explicit):
+    """按 显式参数 -> $FFMPEG -> PATH -> 常见静态包路径 的顺序找 ffmpeg。"""
+    cands = [explicit, os.environ.get("FFMPEG"), shutil.which("ffmpeg"),
+             "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/opt/ffmpeg/bin/ffmpeg"]
+    for pat in ("/opt/ffmpeg-*/bin/ffmpeg", os.path.expanduser("~/.local/bin/ffmpeg")):
+        import glob
+        cands.extend(sorted(glob.glob(pat), reverse=True))
+    for c in cands:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def find_docker(explicit):
+    """找一个真的能连上 daemon 的 docker 客户端（WSL 下常是 docker.exe）。"""
+    import glob
+    cands = [explicit, os.environ.get("DOCKER"), shutil.which("docker"),
+             "/usr/bin/docker", shutil.which("docker.exe"),
+             "/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe"]
+    # WSL 下 Docker Desktop 的 CLI 通常在这里（用户目录各不相同，只能 glob）
+    cands.extend(sorted(glob.glob(
+        "/mnt/c/Users/*/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe")))
+    seen = set()
+    for c in cands:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        if not (os.path.isfile(c) and os.access(c, os.X_OK)):
+            continue
+        r = run([c, "ps", "--format", "{{.Names}}"], timeout=25)
+        if r.returncode == 0:
+            return c
+        log("docker 候选不可用：%s (%s)" % (c, (r.stderr or "").strip()[:80]))
+    return None
+
+
+def jpeg_size(buf):
+    """从 JPEG 的 SOFn 段读宽高，读不到返回 (0, 0)。"""
+    i = 2
+    n = len(buf)
+    while i + 9 < n:
+        if buf[i] != 0xFF:
+            i += 1
+            continue
+        marker = buf[i + 1]
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                      0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            h = (buf[i + 5] << 8) | buf[i + 6]
+            w = (buf[i + 7] << 8) | buf[i + 8]
+            return w, h
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seglen = (buf[i + 2] << 8) | buf[i + 3]
+        if seglen < 2:
+            return 0, 0
+        i += 2 + seglen
+    return 0, 0
+
+
+# --------------------------------------------------------------------------- #
+# 配置
+# --------------------------------------------------------------------------- #
+class Cfg(object):
+    def __init__(self, a):
+        self.display = a.display
+        self.container = (a.container or "").strip()
+        self.mode = "container" if self.container else "local"
+        self.port = a.port
+        self.bind = a.bind
+        self.size = a.size
+        self.fps = max(1, min(a.fps, 30))
+        self.scale = a.scale
+        self.quality = max(2, min(a.quality, 31))
+        self.state_dir = os.path.abspath(os.path.expanduser(a.state_dir))
+        self.snapshot_interval = a.snapshot_interval
+        self.auth = a.auth
+        self.token = a.token
+        self.novnc_port = a.novnc
+        self.title = a.title
+        self.ffmpeg = a.ffmpeg
+        self.docker = a.docker
+        self.container_ffmpeg = a.container_ffmpeg
+        self.pid_file = a.pid_file
+        self.stale_sec = max(4.0, 2.0 + 3.0 / self.fps)
+        self.started = time.time()
+
+
+# --------------------------------------------------------------------------- #
+# 采集层
+# --------------------------------------------------------------------------- #
+class Grabber(threading.Thread):
+    def __init__(self, cfg, ff, docker):
+        super().__init__(daemon=True, name="grabber")
+        self.cfg = cfg
+        self.ff = ff
+        self.docker = docker
+        self.stop_evt = threading.Event()
+        self.lock = threading.Lock()
+        self.frame = None
+        self.seq = 0
+        self.nbytes = 0
+        self.w = 0
+        self.h = 0
+        self.last_ts = 0.0
+        self.last_seq_change = 0.0
+        self.starts = 0
+        self.restarts = 0
+        self.proc_started = 0.0
+        self.last_error = ""
+        self.times = deque(maxlen=400)
+        self.proc = None
+        self.display_size = ""
+
+    # -- 命令构造 ---------------------------------------------------------- #
+    def ff_args(self):
+        c = self.cfg
+        vf = []
+        if c.scale and c.scale > 0:
+            # 只缩不放：源分辨率小于目标宽度时保持原样，避免糊成一片
+            vf.append("scale=min(%d\\,iw):-2" % c.scale)
+        args = ["-hide_banner", "-loglevel", "error", "-nostdin",
+                "-f", "x11grab", "-draw_mouse", "1",
+                "-framerate", str(c.fps), "-video_size", c.size,
+                "-i", c.display]
+        if vf:
+            args += ["-vf", ",".join(vf)]
+        args += ["-f", "mjpeg", "-q:v", str(c.quality), "-"]
+        return args
+
+    def tag(self):
+        return "DESKVIEW_TAG=deskview-%d" % self.cfg.port
+
+    def tag_re(self):
+        # [D] 技巧：让 pkill 的命令行本身不匹配这个正则，避免"杀掉执行 pkill 的 shell"
+        return "[D]ESKVIEW_TAG=deskview-%d" % self.cfg.port
+
+    def build_cmd(self):
+        c = self.cfg
+        # env 前缀给 ffmpeg 打上"端口标签"：容器里 sleep/冻结的旧进程也能被精确 pkill 掉，
+        # 不依赖 pidfile（pidfile 会在重启时被覆盖，正是之前留下僵尸 ffmpeg 的原因）
+        # 容器内用容器自己的 ffmpeg；宿主路径在容器里不存在
+        binary = self.ff if c.mode == "local" else c.container_ffmpeg
+        argv = ["env", self.tag(), binary] + self.ff_args()
+        if c.mode == "local":
+            return argv
+        inner = "echo $$ > %s; exec %s" % (
+            shlex.quote(self.remote_pidfile()),
+            " ".join(shlex.quote(x) for x in argv),
+        )
+        return [self.docker, "exec", c.container, "/bin/sh", "-c", inner]
+
+    def remote_pidfile(self):
+        return "/tmp/deskview-%d.pid" % self.cfg.port
+
+    def kill_stale_remote(self):
+        """杀掉同端口遗留的采集进程。容器里可能还有被 SIGSTOP 冻住的 ffmpeg，
+        不杀干净会占着 X 资源，新实例起得来但拿不到帧。"""
+        pf = self.remote_pidfile()
+        if self.cfg.mode == "local":
+            run(["/bin/sh", "-c", "pkill -9 -f %s 2>/dev/null; rm -f %s"
+                 % (shlex.quote(self.tag_re()), pf)], timeout=10)
+            return
+        if not self.docker:
+            return
+        run([self.docker, "exec", self.cfg.container, "/bin/sh", "-c",
+             '[ -f {pf} ] && kill -9 "$(cat {pf})" 2>/dev/null; '
+             'pkill -9 -f {tag} 2>/dev/null; rm -f {pf}'.format(
+                 pf=pf, tag=shlex.quote(self.tag_re()))], timeout=15)
+
+    # -- 主循环 ------------------------------------------------------------ #
+    def run(self):
+        backoff = 1.0
+        while not self.stop_evt.is_set():
+            try:
+                self.kill_stale_remote()
+                self.proc = subprocess.Popen(
+                    self.build_cmd(), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
+                self.starts += 1
+                self.proc_started = time.time()
+                self.restarts = max(self.restarts, self.starts - 1)
+                threading.Thread(target=self._drain_err, args=(self.proc,), daemon=True).start()
+                seq_before = self.seq
+                self._pump(self.proc)
+                # 只有真的出过帧才算"这次启动是好的"；否则指数退避，别一秒一次地重启
+                if self.seq > seq_before:
+                    backoff = 1.0
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = str(exc)[:300]
+                log("采集异常：%s" % self.last_error)
+            finally:
+                self._kill()
+            if self.stop_evt.is_set():
+                break
+            self.restarts = max(self.restarts, self.starts - 1)
+            log("采集退出（starts=%d restarts=%d，%s），%.1fs 后重启"
+                % (self.starts, self.restarts, self.last_error or "无 stderr", backoff))
+            self.stop_evt.wait(backoff)
+            backoff = min(backoff * 2, 10.0)
+
+    def _drain_err(self, p):
+        try:
+            for line in iter(p.stderr.readline, b""):
+                s = line.decode("utf-8", "replace").strip()
+                if s:
+                    self.last_error = s[:300]
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _pump(self, p):
+        buf = b""
+        while not self.stop_evt.is_set():
+            chunk = p.stdout.read(65536)
+            if not chunk:
+                return
+            buf += chunk
+            if len(buf) > 6 * 1024 * 1024:       # 防止脏字节把内存吃穿
+                buf = buf[-1024 * 1024:]
+            while True:
+                s = buf.find(b"\xff\xd8")
+                if s < 0:
+                    if len(buf) > 2:
+                        buf = buf[-1:]
+                    break
+                if s:
+                    buf = buf[s:]
+                e = buf.find(b"\xff\xd9", 2)
+                if e < 0:
+                    break
+                frame = buf[:e + 2]
+                buf = buf[e + 2:]
+                self._publish(frame)
+
+    def _publish(self, frame):
+        now = time.time()
+        with self.lock:
+            self.frame = frame
+            self.seq += 1
+            self.nbytes = len(frame)
+            self.times.append(now)
+            if self.seq % 20 == 1:
+                self.w, self.h = jpeg_size(frame)
+            self.last_ts = now
+
+    def _kill(self):
+        p = self.proc
+        self.proc = None
+        if p is None:
+            return
+        try:
+            if self.cfg.mode == "local":
+                os.killpg(p.pid, signal.SIGKILL)
+            else:
+                p.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            p.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+        self.kill_stale_remote()
+
+    # -- 对外读取 ---------------------------------------------------------- #
+    def snapshot(self):
+        with self.lock:
+            return self.frame, self.seq, self.last_ts, self.nbytes, self.w, self.h
+
+    def fps(self):
+        now = time.time()
+        with self.lock:
+            if not self.times:
+                return 0.0
+            first = self.times[0]
+            recent = [t for t in self.times if now - t <= 5.0]
+        span = max(1.0, min(5.0, now - first))     # 刚启动时别用满 5 秒做分母
+        return round(len(recent) / span, 2)
+
+    def stopped(self):
+        return self.stop_evt.is_set()
+
+
+# --------------------------------------------------------------------------- #
+# 显示器 / 窗口探测
+# --------------------------------------------------------------------------- #
+class Probe(threading.Thread):
+    """定期探测 X 分辨率与窗口列表（容器模式走 docker exec）。"""
+
+    def __init__(self, cfg, docker):
+        super().__init__(daemon=True, name="probe")
+        self.cfg = cfg
+        self.docker = docker
+        self.stop_evt = threading.Event()
+        self.lock = threading.Lock()
+        self.display_size = ""
+        self.windows = []
+        self.windows_source = ""
+        self.windows_error = ""
+        self.last_probe = 0.0
+
+    def _x(self, shcmd, timeout=8):
+        c = self.cfg
+        if c.mode == "local":
+            env = dict(os.environ, DISPLAY=c.display)
+            return run(["/bin/sh", "-c", shcmd], timeout=timeout, env=env)
+        return run([self.docker, "exec", c.container, "/bin/sh", "-c",
+                    "DISPLAY=%s %s" % (shlex.quote(c.display), shcmd)], timeout=timeout)
+
+    def probe_size(self):
+        r = self._x("xdpyinfo 2>/dev/null | sed -n 's/.*dimensions: *\\([0-9]*x[0-9]*\\).*/\\1/p'")
+        size = (r.stdout or "").strip().splitlines()
+        if r.returncode == 0 and size:
+            self.display_size = size[0]
+
+    def run(self):
+        self.probe_size()
+        while not self.stop_evt.is_set():
+            self.probe_windows()
+            self.stop_evt.wait(5.0)
+
+    def probe_windows(self):
+        """一次往返拿全：优先用 WM 的 _NET_CLIENT_LIST（真实应用窗口），
+        没有 WM 时退回 xwininfo 树里带标题的窗口。"""
+        r = self._x("xprop -root -notype _NET_CLIENT_LIST _NET_ACTIVE_WINDOW 2>/dev/null; "
+                    "xwininfo -root -tree 2>/dev/null", timeout=15)
+        if r.returncode != 0 or not r.stdout:
+            with self.lock:
+                self.windows_error = (r.stderr or "xwininfo 不可用").strip()[:200]
+            return
+
+        clients, active = [], ""
+        tree = {}
+        for line in r.stdout.splitlines():
+            if line.startswith("_NET_CLIENT_LIST:"):
+                clients = re.findall(r"0x[0-9a-fA-F]+", line.split("#", 1)[-1])
+                continue
+            if line.startswith("_NET_ACTIVE_WINDOW:"):
+                m = re.search(r"(0x[0-9a-fA-F]+)", line)
+                active = m.group(1) if m else ""
+                continue
+            m = re.match(r'^(\s+)(0x[0-9a-fA-F]+)\s+(.*?):\s*(?:\((.*?)\))?\s+'
+                         r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', line)
+            if not m:
+                continue
+            tid = m.group(2)
+            title = m.group(3).strip()
+            title = "" if title == "(has no name)" else title.strip('"')
+            tree[tid] = {"title": title, "class": (m.group(4) or "").replace('"', ""),
+                         "w": int(m.group(5)), "h": int(m.group(6)),
+                         "x": int(m.group(7)), "y": int(m.group(8)),
+                         "depth": len(m.group(1))}
+
+        if clients:
+            wins = []
+            for cid in clients:
+                t = tree.get(cid, {"title": "", "class": "", "w": 0, "h": 0, "x": 0, "y": 0})
+                if t["w"] < 40 or t["h"] < 30:
+                    continue
+                wins.append({"id": cid, "title": t["title"], "class": t["class"],
+                             "x": t["x"], "y": t["y"], "w": t["w"], "h": t["h"],
+                             "active": cid == active})
+            src = "_NET_CLIENT_LIST"
+        else:                                   # 无窗口管理器：退回带标题的窗口
+            wins, seen = [], set()
+            for tid, t in sorted(tree.items(), key=lambda kv: kv[1]["depth"]):
+                if not t["title"] or t["w"] < 80 or t["h"] < 60:
+                    continue
+                key = (t["title"], t["x"], t["y"], t["w"], t["h"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                wins.append({"id": tid, "title": t["title"], "class": t["class"],
+                             "x": t["x"], "y": t["y"], "w": t["w"], "h": t["h"],
+                             "active": tid == active})
+            src = "xwininfo(title)"
+        with self.lock:
+            self.windows = wins[:60]
+            self.windows_source = src
+            self.windows_error = "" if wins else "已连上 X 但没找到可见窗口"
+            self.last_probe = time.time()
+
+
+# --------------------------------------------------------------------------- #
+# 状态汇总
+# --------------------------------------------------------------------------- #
+def build_state(cfg, grab, probe, clients):
+    frame, seq, last_ts, nbytes, fw, fh = grab.snapshot()
+    now = time.time()
+    age = round(now - last_ts, 3) if last_ts else None
+    with probe.lock:
+        windows = list(probe.windows)
+        dsize = probe.display_size or cfg.size
+        werr = probe.windows_error
+    fps = grab.fps()
+    reasons = []
+    if frame is None:
+        reasons.append("no_frame_yet")
+    elif age is not None and age > cfg.stale_sec:
+        reasons.append("frame_stale_%ss" % int(age))
+    if grab.restarts > 0 and frame is None:
+        reasons.append("grabber_not_running")
+    if grab.restarts > 20:
+        reasons.append("restart_storm")
+    ok = not reasons
+    data = {
+        "ok": ok,
+        "version": VERSION,
+        "generated_at": time.strftime(ISO),
+        "uptime_sec": round(now - cfg.started, 1),
+        "display": cfg.display,
+        "mode": cfg.mode,
+        "container": cfg.container or None,
+        "resolution": {"configured": cfg.size, "display": dsize,
+                       "frame": ("%dx%d" % (fw, fh)) if fw else None},
+        "capture": {"fps_target": cfg.fps, "fps_measured": fps,
+                    "frames_total": seq, "last_frame_bytes": nbytes,
+                    "scale": cfg.scale, "quality": cfg.quality},
+        "last_frame": {"seq": seq, "age_sec": age, "bytes": nbytes,
+                       "at": time.strftime(ISO, time.localtime(last_ts)) if last_ts else None,
+                       "snapshot": os.path.join(cfg.state_dir, "latest.jpg")},
+        "grabber": {"starts": grab.starts, "restarts": grab.restarts,
+                    "last_error": grab.last_error},
+        "windows": windows,
+        "windows_source": probe.windows_source if windows else (werr or None),
+        "clients": clients,
+        "health": {"ok": ok, "reasons": reasons},
+    }
+    return data
+
+
+def write_snapshot(path, frame):
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(frame)
+    os.replace(tmp, path)
+
+
+# --------------------------------------------------------------------------- #
+# HTTP
+# --------------------------------------------------------------------------- #
+PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+ html,body{margin:0;height:100%;background:#0b0b0f;color:#cfcfd6;font:13px/1.5 system-ui,-apple-system,sans-serif}
+ .bar{display:flex;gap:16px;align-items:center;padding:9px 14px;background:#141419;border-bottom:1px solid #26262f;flex-wrap:wrap}
+ .bar b{color:#eaeaf0;font-weight:600}
+ .bar a{color:#b9ff4d;text-decoration:none}
+ .bar a:hover{text-decoration:underline}
+ .dot{width:8px;height:8px;border-radius:50%;background:#666;display:inline-block}
+ .dot.ok{background:#3ddc84}.dot.bad{background:#ff5252}
+ .wrap{height:calc(100% - 42px);display:flex;align-items:center;justify-content:center;padding:8px;box-sizing:border-box}
+ img{max-width:100%;max-height:100%;box-shadow:0 0 0 1px #26262f;background:#000}
+ small{color:#7c7c8a}
+</style></head><body>
+<div class="bar">
+  <b>桌面 __DISPLAY__</b>
+  <span><span id="dot" class="dot"></span> <span id="st">连接中…</span></span>
+  <small id="meta"></small>
+  __NOVNC__
+  <a href="/state" target="_blank">/state</a>
+  <a href="/snap.jpg" target="_blank">/snap.jpg</a>
+</div>
+<div class="wrap"><img src="/stream.mjpg" alt="桌面实时画面"></div>
+<script>
+async function tick(){
+  try{
+    const r = await fetch('/state',{cache:'no-store'}); const s = await r.json();
+    document.getElementById('dot').className = 'dot ' + (s.ok?'ok':'bad');
+    document.getElementById('st').textContent = s.ok ? ('正常 · ' + s.capture.fps_measured + ' fps')
+                                                    : ('异常 · ' + (s.health.reasons||[]).join(','));
+    document.getElementById('meta').textContent =
+      (s.resolution.display||'') + ' · 帧 #' + s.capture.frames_total +
+      ' · 延迟 ' + (s.last_frame.age_sec==null?'-':s.last_frame.age_sec.toFixed(2)+'s');
+  }catch(e){ document.getElementById('dot').className='dot bad'; document.getElementById('st').textContent='状态接口不可达'; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "deskview/" + VERSION
+    protocol_version = "HTTP/1.1"
+
+    # -- 认证 -------------------------------------------------------------- #
+    def _authorized(self):
+        cfg = self.server.cfg
+        if not cfg.auth and not cfg.token:
+            return True
+        u = urlparse(self.path)
+        qs = parse_qs(u.query)
+        if cfg.token:
+            got = (qs.get("token", [""])[0]) or self.headers.get("X-Desk-Token", "")
+            if got and hmac.compare_digest(str(got), str(cfg.token)):
+                return True
+        if cfg.auth:
+            h = self.headers.get("Authorization", "")
+            if h.startswith("Basic "):
+                try:
+                    raw = base64.b64decode(h[6:]).decode("utf-8", "replace")
+                except Exception:  # noqa: BLE001
+                    raw = ""
+                if hmac.compare_digest(raw, cfg.auth):
+                    return True
+        return False
+
+    def _deny(self):
+        body = b"401 unauthorized\n"
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="deskview"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, code, ctype, body, extra=None):
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    # -- 路由 -------------------------------------------------------------- #
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        srv = self.server
+        cfg = srv.cfg
+        if not self._authorized():
+            return self._deny()
+        path = urlparse(self.path).path
+
+        if path in ("/", "/index.html"):
+            novnc = ""
+            if cfg.novnc_port:
+                novnc = ('<a href="http://%s:%d/vnc.html?autoconnect=1&resize=scale" '
+                         'target="_blank">→ 需要操作（noVNC）</a>'
+                         % (self.headers.get("Host", "127.0.0.1").split(":")[0], cfg.novnc_port))
+            html = (PAGE.replace("__DISPLAY__", cfg.display)
+                        .replace("__TITLE__", cfg.title)
+                        .replace("__NOVNC__", novnc))
+            return self._send(200, "text/html; charset=utf-8", html)
+
+        if path == "/stream.mjpg":
+            return self._stream()
+
+        if path == "/snap.jpg":
+            frame, seq, ts, nb, _w, _h = srv.grab.snapshot()
+            if not frame:
+                return self._send(503, "text/plain; charset=utf-8", "no frame yet\n")
+            return self._send(200, "image/jpeg", frame, {"X-Frame-Seq": str(seq)})
+
+        if path == "/state":
+            st = build_state(cfg, srv.grab, srv.probe, srv.clients)
+            return self._send(200, "application/json; charset=utf-8",
+                              json.dumps(st, ensure_ascii=False, indent=1) + "\n")
+
+        if path == "/healthz":
+            st = build_state(cfg, srv.grab, srv.probe, srv.clients)
+            return self._send(200 if st["ok"] else 503, "application/json; charset=utf-8",
+                              json.dumps({"ok": st["ok"], "reasons": st["health"]["reasons"]}) + "\n")
+
+        if path == "/metrics":
+            return self._send(200, "text/plain; version=0.0.4; charset=utf-8", self._metrics())
+
+        return self._send(404, "text/plain; charset=utf-8", "not found\n")
+
+    def _metrics(self):
+        srv = self.server
+        st = build_state(srv.cfg, srv.grab, srv.probe, srv.clients)
+        g = srv.grab
+        lines = [
+            "# HELP deskview_frames_total 累计解码帧数",
+            "# TYPE deskview_frames_total counter",
+            "deskview_frames_total %d" % st["capture"]["frames_total"],
+            "# HELP deskview_fps 近 5 秒实测帧率",
+            "# TYPE deskview_fps gauge",
+            "deskview_fps %.3f" % st["capture"]["fps_measured"],
+            "# HELP deskview_frame_age_seconds 最近一帧年龄",
+            "# TYPE deskview_frame_age_seconds gauge",
+            "deskview_frame_age_seconds %.3f" % (st["last_frame"]["age_sec"] or 0),
+            "# HELP deskview_up 采集是否健康",
+            "# TYPE deskview_up gauge",
+            "deskview_up %d" % (1 if st["ok"] else 0),
+            "# HELP deskview_restarts_total 采集进程重启次数",
+            "# TYPE deskview_restarts_total counter",
+            "deskview_restarts_total %d" % g.restarts,
+            "# HELP deskview_last_frame_bytes 最近一帧字节数",
+            "# TYPE deskview_last_frame_bytes gauge",
+            "deskview_last_frame_bytes %d" % st["capture"]["last_frame_bytes"],
+            "# HELP deskview_windows 探测到的窗口数",
+            "# TYPE deskview_windows gauge",
+            "deskview_windows %d" % len(st["windows"]),
+        ]
+        return "\n".join(lines) + "\n"
+
+    def _stream(self):
+        srv = self.server
+        cfg = srv.cfg
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        last = -1
+        with srv.lock:
+            srv.clients["active"] += 1
+        try:
+            while True:
+                frame, seq, _ts, _nb, _w, _h = srv.grab.snapshot()
+                if frame is None:
+                    time.sleep(0.1)
+                    continue
+                if seq == last:
+                    time.sleep(0.02)
+                    continue
+                head = ("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n"
+                        "X-Frame-Seq: %d\r\n\r\n" % (len(frame), seq)).encode()
+                self.wfile.write(head)
+                self.wfile.write(frame)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+                last = seq
+                time.sleep(max(0.0, 1.0 / cfg.fps - 0.01))
+        except Exception:  # noqa: BLE001  客户端断开
+            return
+        finally:
+            with srv.lock:
+                srv.clients["active"] = max(0, srv.clients["active"] - 1)
+
+
+# --------------------------------------------------------------------------- #
+# main
+# --------------------------------------------------------------------------- #
+def parse_auth(s):
+    if not s:
+        return None
+    if ":" not in s:
+        sys.exit("--auth 需要 user:password 形式")
+    return s
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="X 桌面 MJPEG 直播 + 结构化状态接口",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""示例：
+  deskview --display :98 --port 6084
+  deskview --container agent-desktop --display :98 --port 6084 --size 1920x1080
+  deskview --display :97 --bind 0.0.0.0 --auth monitor:secret""")
+    ap.add_argument("--display", default=":98", help="X 显示号，默认 :98")
+    # nargs="?" ：systemd 里 --container ${DESK_CONTAINER} 在变量为空时不会报错，等同本机模式
+    ap.add_argument("--container", nargs="?", const="", default="",
+                    help="容器名；给了就进容器抓屏，省略=本机 X")
+    ap.add_argument("--port", type=int, default=6084, help="HTTP 端口，默认 6084")
+    ap.add_argument("--bind", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
+    ap.add_argument("--size", default="auto", help="采集分辨率 WxH 或 auto（默认自动探测）")
+    ap.add_argument("--fps", type=int, default=6, help="采集帧率，默认 6")
+    ap.add_argument("--scale", type=int, default=1440, help="输出宽度，0=不缩放，默认 1440")
+    ap.add_argument("--quality", type=int, default=5, help="MJPEG 质量 2(最好)-31(最差)，默认 5")
+    ap.add_argument("--state-dir", default="~/.local/state/deskview",
+                    help="状态目录（latest.jpg/pid），默认 ~/.local/state/deskview")
+    ap.add_argument("--snapshot-interval", type=float, default=1.0,
+                    help="latest.jpg 落盘间隔秒，0=关闭，默认 1")
+    ap.add_argument("--novnc", type=int, default=0, help="noVNC 端口，给了页面就显示接管链接")
+    ap.add_argument("--title", default="桌面直播", help="页面标题")
+    ap.add_argument("--auth", default=os.environ.get("DESKVIEW_AUTH", ""),
+                    help="HTTP Basic 认证 user:pass（也可用 $DESKVIEW_AUTH）")
+    ap.add_argument("--token", default=os.environ.get("DESKVIEW_TOKEN", ""),
+                    help="URL token（?token=... 或 X-Desk-Token 头）")
+    ap.add_argument("--ffmpeg", default="", help="ffmpeg 路径（默认自动找/或 $FFMPEG）")
+    ap.add_argument("--docker", default="", help="docker 客户端路径（默认自动探测）")
+    ap.add_argument("--container-ffmpeg", default="ffmpeg", help="容器内 ffmpeg 路径")
+    ap.add_argument("--pid-file", default="", help="写自身 pid 的文件（方便外部重启）")
+    ap.add_argument("--no-self-heal", dest="self_heal", action="store_false",
+                    help="关闭内部冻结看门狗（交给外部 deskguard 统一重启时用，避免两级重启打架）")
+    ap.add_argument("--version", action="version", version="deskview " + VERSION)
+    a = ap.parse_args()
+
+    if not re.match(r"^:\d+$", a.display):
+        sys.exit("--display 需形如 :98（当前：%r）" % a.display)
+    a.auth = parse_auth(a.auth)
+
+    os.makedirs(os.path.expanduser(a.state_dir), exist_ok=True)
+    cfg = Cfg(a)
+
+    ff = find_ffmpeg(a.ffmpeg)
+    docker = None
+    if cfg.mode == "container":
+        docker = find_docker(a.docker)
+        if not docker:
+            sys.exit("找不到可用的 docker 客户端（试试 --docker /path/to/docker 或 $DOCKER；exit 2）")
+        r = run([docker, "inspect", "-f", "{{.State.Running}}", cfg.container], timeout=20)
+        if r.returncode != 0 or "true" not in (r.stdout or "").lower():
+            sys.exit("容器 %s 不存在或未运行：%s" % (cfg.container, (r.stderr or "").strip()[:200]))
+    else:
+        if not ff:
+            sys.exit("找不到 ffmpeg（安装 ffmpeg 或用 --ffmpeg/$FFMPEG 指定）")
+        r = run(["/bin/sh", "-c", "DISPLAY=%s timeout 5 xdpyinfo >/dev/null 2>&1"
+                 % shlex.quote(cfg.display)], timeout=8)
+        if r.returncode != 0:
+            log("警告：%s 现在探测不到（x11vnc/Xvfb 可能还没起）" % cfg.display)
+
+    probe = Probe(cfg, docker)
+    probe.probe_size()
+    if cfg.size in ("auto", "", None):
+        cfg.size = probe.display_size or "1920x1080"
+        if probe.display_size:
+            log("自动分辨率：%s" % cfg.size)
+    probe.start()
+
+    grab = Grabber(cfg, ff or "ffmpeg", docker)
+    grab.start()
+
+    if cfg.bind not in ("127.0.0.1", "localhost", "::1") and not (cfg.auth or cfg.token):
+        log("警告：监听 %s 且未设置 --auth/--token，任何能连到该端口的人都能看屏幕" % cfg.bind)
+
+    srv = ThreadingHTTPServer((cfg.bind, cfg.port), Handler)
+    srv.daemon_threads = True
+    srv.cfg = cfg
+    srv.grab = grab
+    srv.probe = probe
+    srv.lock = threading.Lock()
+    srv.clients = {"active": 0}
+
+    # latest.jpg 落盘线程
+    def snapshotter():
+        path = os.path.join(cfg.state_dir, "latest.jpg")
+        while not grab.stopped():
+            if cfg.snapshot_interval > 0:
+                frame, _seq, _ts, _nb, _w, _h = grab.snapshot()
+                if frame:
+                    try:
+                        write_snapshot(path, frame)
+                    except Exception as exc:  # noqa: BLE001
+                        log("快照写入失败：%s" % exc)
+            time.sleep(max(0.2, cfg.snapshot_interval))
+
+    if cfg.snapshot_interval > 0:
+        threading.Thread(target=snapshotter, daemon=True).start()
+
+    # 采集冻结看门狗（进程活着但没帧）
+    def watchdog():
+        while not grab.stopped():
+            time.sleep(1.0)
+            _f, _s, ts, _nb, _w, _h = grab.snapshot()
+            # 拿"最后一帧"和"进程启动"里较晚的那个算冻结，避免刚重启还没出帧就被再杀一次
+            ref = max(ts, grab.proc_started)
+            if ref and time.time() - ref > cfg.stale_sec:
+                log("看门狗：%.0fs 无新帧，重启采集" % (time.time() - ref))
+                grab._kill()
+
+    if a.self_heal:
+        threading.Thread(target=watchdog, daemon=True).start()
+    else:
+        log("已关闭内部看门狗（--no-self-heal），冻结恢复由外部 supervisor 负责")
+
+    if cfg.pid_file:
+        with open(cfg.pid_file, "w") as f:
+            f.write(str(os.getpid()))
+
+    def shutdown(*_a):
+        log("退出")
+        grab.stop_evt.set()
+        grab._kill()
+        probe.stop_evt.set()
+        if cfg.pid_file and os.path.exists(cfg.pid_file):
+            try:
+                os.unlink(cfg.pid_file)
+            except OSError:
+                pass
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    log("v%s %s 模式 display=%s size=%s fps=%d -> http://%s:%d/"
+        % (VERSION, cfg.mode, cfg.display, cfg.size, cfg.fps, cfg.bind, cfg.port))
+    try:
+        srv.serve_forever(poll_interval=0.5)
+    finally:
+        shutdown()
+
+
+if __name__ == "__main__":
+    main()

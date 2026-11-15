@@ -1,0 +1,14 @@
+{
+  "name": "browser",
+  "version": "0.1.0",
+  "description": "Use the workspace's web browser: open pages, read them, click, type, take screenshots. Each agent works in its own tabs.",
+  "license": "MIT",
+  "extensions": {
+    "vesper": {
+      "tools": "dist/tools.js",
+      "promptSection": "prompt.md",
+      "effects": ["network"],
+      "defaultEnabled": true
+    }
+  }
+}

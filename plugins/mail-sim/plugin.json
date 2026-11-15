@@ -1,0 +1,15 @@
+{
+  "name": "mail-sim",
+  "version": "0.1.0",
+  "description": "A simulated mailbox and calendar kept in files. Mail arrives when a file is dropped into its inbox folder. Used for tests and demos; real providers follow the same interfaces.",
+  "license": "MIT",
+  "extensions": {
+    "vesper": {
+      "tools": "dist/tools.js",
+      "sources": "dist/sources.js",
+      "promptSection": "prompt.md",
+      "effects": ["read", "irreversible"],
+      "defaultEnabled": false
+    }
+  }
+}

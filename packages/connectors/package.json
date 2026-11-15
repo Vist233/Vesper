@@ -1,0 +1,15 @@
+{
+  "name": "@vesper/connectors",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Interfaces of mail and calendar providers, the provider registry, the tools built over any provider, the event source, and the contract suites every provider plugin must pass.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@vesper/contracts": "*"
+  }
+}

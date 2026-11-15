@@ -1,0 +1,6 @@
+#!/command/with-contenv sh
+# Owns the displays, browsers and take-over bridges of all workspaces. Configuration: OGB_* variables of the image.
+# The model key belongs to the application only: it is taken out of this service's environment, so no browser, desktop
+# process or workspace command started from here can inherit it.
+mkdir -p /run/ogb
+exec env -u COMMANDCODE_API_KEY -u OGB_API_TOKEN node /opt/ogb/packages/desk-daemon/src/main.ts
