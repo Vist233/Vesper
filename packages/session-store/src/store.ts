@@ -20,9 +20,13 @@ export interface SessionRecord {
   summary?: string;
   /** Scheduled wake-ups of this bot, owned by the runtime's scheduler; the store keeps them as they are. */
   schedules?: JsonValue[];
+  /** The last result of a scheduled run worth telling the person: `{ at, text }` (the page turns it into a notification). */
+  notice?: { at: number; text: string };
+  /** The last message of the conversation, for the contact list: who wrote it, when, and its first words. */
+  last?: { at: number; who: "person" | "bot"; text: string };
 }
 
-export type NewSession = Omit<SessionRecord, "id" | "status" | "createdAt" | "summary" | "schedules"> & { id?: string };
+export type NewSession = Omit<SessionRecord, "id" | "status" | "createdAt" | "summary" | "schedules" | "notice" | "last"> & { id?: string };
 
 export interface SessionPaths {
   directory: string;
@@ -40,7 +44,7 @@ export interface SessionStore {
   get(id: string): Promise<SessionRecord>;
   /** Sorted by creation time. Sessions whose record is damaged are reported, not hidden and not fatal. */
   list(): Promise<{ sessions: SessionRecord[]; damaged: string[] }>;
-  update(id: string, patch: Partial<Pick<SessionRecord, "title" | "status" | "star" | "summary" | "schedules">>): Promise<SessionRecord>;
+  update(id: string, patch: Partial<Pick<SessionRecord, "title" | "status" | "star" | "summary" | "schedules" | "notice" | "last">>): Promise<SessionRecord>;
   /** Removes everything of the session. Harmless when it does not exist. */
   delete(id: string): Promise<void>;
   paths(id: string): SessionPaths;
@@ -66,7 +70,9 @@ function isRecord(value: unknown, id: string): value is SessionRecord {
     (value.model === undefined || typeof value.model === "string") &&
     (value.star === undefined || typeof value.star === "string") &&
     (value.summary === undefined || typeof value.summary === "string") &&
-    (value.schedules === undefined || Array.isArray(value.schedules))
+    (value.schedules === undefined || Array.isArray(value.schedules)) &&
+    (value.notice === undefined || (typeof value.notice === "object" && value.notice !== null)) &&
+    (value.last === undefined || (typeof value.last === "object" && value.last !== null))
   );
 }
 
@@ -178,6 +184,8 @@ export function createFileSessionStore(options: { root: string; now?: () => numb
         ...(patch.star !== undefined ? { star: patch.star } : {}),
         ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
         ...(patch.schedules !== undefined ? { schedules: patch.schedules } : {}),
+        ...(patch.notice !== undefined ? { notice: patch.notice } : {}),
+        ...(patch.last !== undefined ? { last: patch.last } : {}),
       };
       await writeRecord(next);
       return next;

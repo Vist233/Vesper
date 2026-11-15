@@ -19,6 +19,12 @@ export function createFakeDesktop(elements: DesktopElement[] = [{ ref: "w1", rol
     async type(text) {
       actions.push(`type ${text}`);
     },
+    async launch(program, args) {
+      actions.push(`launch ${[program, ...args].join(" ")}`);
+    },
+    async path(points) {
+      actions.push(`path ${points.map((point) => `${point.x},${point.y}`).join(" ")}`);
+    },
     async drag(x, y, toX, toY) {
       actions.push(`drag ${x},${y} ${toX},${toY}`);
     },

@@ -175,6 +175,29 @@ describe("the browser tool", () => {
   });
 });
 
+describe("searching with Google", () => {
+  it("searches in one tab of the agent, returns the results the page script read, and reuses the tab", async () => {
+    const results = [{ title: "Vesper", url: "https://example.test/vesper", snippet: "a box of agents" }];
+    const backend = createFakeBrowser({}, { evaluate: (_expression, url) => ({ blocked: url.includes("sorry"), results }) });
+    const tool = createBrowserTool({ backend });
+    const me = agent("me");
+    const first = (await run(tool, me, { action: "search", query: "vesper agents" })).json();
+    expect(first).toEqual({ tab: "t1", query: "vesper agents", results });
+    expect(backend.evaluated[0]).toContain("a h3");
+    expect((await run(tool, me, { action: "search", query: "second" })).json().tab).toBe("t1"); // the same tab
+    expect(backend.opened).toEqual(["t1"]);
+    expect((await run(tool, me, { action: "snapshot" })).json().url).toBe("https://www.google.com/search?hl=en&q=second");
+    expect((await run(tool, me, { action: "search" })).isError).toBe(true);
+  });
+
+  it("says when Google asks for a person and does not try to pass it", async () => {
+    const backend = createFakeBrowser({}, { evaluate: () => ({ blocked: true, results: [] }) });
+    const result = await run(createBrowserTool({ backend }), agent("me"), { action: "search", query: "x" });
+    expect(result.isError).toBe(true);
+    expect(result.json()).toMatchObject({ blocked: true, note: expect.stringContaining("ask_human") });
+  });
+});
+
 describe("a tab the browser no longer has", () => {
   it("is dropped and the agent is told to open the page again, instead of failing on the same tab for ever", async () => {
     const backend = createFakeBrowser(pages);

@@ -9,6 +9,7 @@ import {
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL_NAME,
   FIRST_PARTY_PLUGINS,
+  loadMcpConfig,
   loadModelConfig,
   loadProfileConfig,
   withoutUnusableProfiles,
@@ -81,7 +82,7 @@ describe("profile configuration", () => {
       for (const plugin of profile.plugins) expect(FIRST_PARTY_PLUGINS).toContain(plugin);
     }
     expect(config.profiles["general-mail"]?.plugins).toContain("mail-sim");
-    for (const name of ALWAYS_DECLARED_TOOLS.filter((n) => n !== "browser")) expect(Object.values(CORE_TOOL_NAMES).flat()).toContain(name); // no typo in a core name
+    for (const name of ALWAYS_DECLARED_TOOLS.filter((n) => n !== "browser" && n !== "desktop")) expect(Object.values(CORE_TOOL_NAMES).flat()).toContain(name); // no typo in a core name
     for (const profile of Object.values(config.profiles)) expect(profile.alwaysDeclaredTools).toEqual([...ALWAYS_DECLARED_TOOLS]); // ask, speak and browse need no search first
     expect(config.profiles.general?.plugins).not.toContain("mail-sim");
   });
@@ -117,5 +118,18 @@ describe("withoutUnusableProfiles", () => {
     const onlyMail = withoutUnusableProfiles({ ...profiles, default: "general-mail" }, ["handoff", "browser", "computer"]);
     expect(onlyMail.default).toBe("general");
     expect(withoutUnusableProfiles(profiles, []).default).toBe("");
+  });
+});
+
+describe("MCP configuration", () => {
+  it("has no servers without a file, reads servers from mcp.json, and refuses what it cannot use", () => {
+    const { env, dataDir } = envFor();
+    expect(loadMcpConfig(env)).toBeUndefined();
+    writeConfig(dataDir, "mcp.json", JSON.stringify({ servers: { files: { command: "npx", args: ["-y", "some-mcp"], env: { A: "1" } } } }));
+    expect(loadMcpConfig(env)).toEqual({ servers: { files: { command: "npx", args: ["-y", "some-mcp"], env: { A: "1" } } } });
+    for (const bad of [{ servers: [] }, { servers: { files: {} } }, { servers: { "Bad Name": { command: "x" } } }, { servers: {}, expose: "search" }]) {
+      writeConfig(dataDir, "mcp.json", JSON.stringify(bad));
+      expect(() => loadMcpConfig(env), JSON.stringify(bad)).toThrow(/mcp\.json/);
+    }
   });
 });

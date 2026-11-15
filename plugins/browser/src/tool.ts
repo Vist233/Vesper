@@ -1,5 +1,6 @@
 import type { Tool, ToolContext, ToolResult } from "sakura-agent";
 import type { BrowserBackend } from "./backend.ts";
+import { GOOGLE_RESULTS } from "./dom-scripts.ts";
 
 const text = (value: string, isError = false): ToolResult => ({ content: [{ type: "text", text: value }], ...(isError ? { isError } : {}) });
 const MAX_TEXT = 6000;
@@ -41,7 +42,7 @@ function selectorProblem(target: string | undefined): string | undefined {
 const TAB_GONE = /no (such )?tab|tab .*(not found|gone|closed)|target (closed|not found)|no page|session (closed|not found)/i;
 
 const DESCRIPTION =
-  "Use this workspace's web browser. Actions: open (url) opens a new tab of yours; navigate (tab, url); snapshot (tab) reads the page text and lists elements with a ref each; read_text (tab, ref); click (tab, ref); type (tab, ref, text, submit); press (tab, key); scroll (tab, direction, pixels); screenshot (tab); close (tab); tabs lists your tabs. evaluate (tab, expression, awaitPromise) runs JavaScript in the page and returns its value as JSON, cut at 8 KB: use it to read the DOM and to check results. fill (tab, target, text) sets a form field the way typing does and reads it back; check (tab, target) ticks a checkbox or radio button and reads it back; for both, target is a CSS selector. After open, navigate, click, type or press you may pass expectText to check that the page now shows it. You can only use tabs you opened. Take a snapshot before you click or type.";
+  "Use this workspace's web browser. Actions: search (query) searches Google in a tab of yours and returns up to 10 results (title, url, snippet): the cheap way to find pages; open (url) opens a new tab of yours; navigate (tab, url); snapshot (tab) reads the page text and lists elements with a ref each; read_text (tab, ref); click (tab, ref); type (tab, ref, text, submit); press (tab, key); scroll (tab, direction, pixels); screenshot (tab); close (tab); tabs lists your tabs. evaluate (tab, expression, awaitPromise) runs JavaScript in the page and returns its value as JSON, cut at 8 KB: use it to read the DOM and to check results. fill (tab, target, text) sets a form field the way typing does and reads it back; check (tab, target) ticks a checkbox or radio button and reads it back; for both, target is a CSS selector. After open, navigate, click, type or press you may pass expectText to check that the page now shows it. You can only use tabs you opened. Take a snapshot before you click or type.";
 
 export interface BrowserToolOptions {
   backend: BrowserBackend;
@@ -58,6 +59,7 @@ export function createBrowserTool(options: BrowserToolOptions): Tool {
   const agentIds = new WeakMap<object, number>();
   let nextAgent = 1;
   const lastTab = new Map<number, string>();
+  const searchTab = new Map<number, string>();
 
   const agentOf = (context: ToolContext): number => {
     const key = context.log as unknown as object;
@@ -103,9 +105,26 @@ export function createBrowserTool(options: BrowserToolOptions): Tool {
       properties: {
         action: {
           type: "string",
-          enum: ["open", "navigate", "snapshot", "read_text", "click", "type", "press", "scroll", "screenshot", "close", "tabs", "evaluate", "fill", "check"],
+          enum: [
+            "search",
+            "open",
+            "navigate",
+            "snapshot",
+            "read_text",
+            "click",
+            "type",
+            "press",
+            "scroll",
+            "screenshot",
+            "close",
+            "tabs",
+            "evaluate",
+            "fill",
+            "check",
+          ],
         },
         url: { type: "string" },
+        query: { type: "string", description: "search: what to look for" },
         tab: { type: "string", description: "A tab you opened; defaults to your latest" },
         ref: { type: "string", description: "Element ref from a snapshot" },
         text: { type: "string" },
@@ -134,6 +153,28 @@ export function createBrowserTool(options: BrowserToolOptions): Tool {
         if (input.action === "tabs") {
           const mine = [...owners].filter(([, owner]) => owner === agent).map(([tab]) => tab);
           return text(JSON.stringify({ tabs: mine }));
+        }
+        if (input.action === "search") {
+          const query = str("query");
+          if (!query || query.length > 500 || query.includes("\0")) return text("'query' is required for search (at most 500 characters).", true);
+          // One search tab per agent: a later search reuses it, so searching does not pile up tabs.
+          const url = `https://www.google.com/search?hl=en&q=${encodeURIComponent(query)}`;
+          const reuse = searchTab.get(agent);
+          const page = reuse && owners.get(reuse) === agent ? await options.backend.navigate(reuse, url) : await options.backend.open(url);
+          owners.set(page.tab, agent);
+          lastTab.set(agent, page.tab);
+          searchTab.set(agent, page.tab);
+          const found = (await options.backend.evaluate(page.tab, GOOGLE_RESULTS, false)) as { blocked?: boolean; results?: unknown[] } | null;
+          if (found?.blocked)
+            return text(
+              JSON.stringify({
+                tab: page.tab,
+                blocked: true,
+                note: "Google asks for a check that proves a person is there. Do not try to pass it: ask the person (ask_human) to solve it in the live view, then search again.",
+              }),
+              true,
+            );
+          return text(JSON.stringify({ tab: page.tab, query, results: found?.results ?? [] }));
         }
         if (input.action === "open") {
           const url = str("url");

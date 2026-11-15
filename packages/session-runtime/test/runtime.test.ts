@@ -301,6 +301,20 @@ describe("rules at the edges", () => {
     expect(names.indexOf("review")).toBeGreaterThan(names.indexOf("redaction"));
   });
 
+  it("hands the box's MCP servers to the framework, exposed directly, and leaves them out when there are none", async () => {
+    const seen: unknown[] = [];
+    const capture = async (config: Parameters<typeof import("sakura-agent").createAgent>[0]) => {
+      seen.push(config.mcp);
+      const { createAgent } = await import("sakura-agent");
+      return createAgent({ ...config, mcp: undefined } as never); // the server is not started here: only what is passed is checked
+    };
+    const withServers = rig({ runtime: { createAgent: capture, mcp: { servers: { files: { command: "files-mcp" } } } } });
+    await withServers.runtime.createSession({});
+    const without = rig({ runtime: { createAgent: capture, mcp: { servers: {} } } });
+    await without.runtime.createSession({});
+    expect(seen).toEqual([{ expose: "direct", servers: { files: { command: "files-mcp" } } }, undefined]);
+  });
+
   it("refuses new input when the journal cannot be written, leaves no trace, and works again afterwards", async () => {
     const journals = new Map<string, ReturnType<typeof createMemoryJournal>>();
     const { runtime, faux } = rig({

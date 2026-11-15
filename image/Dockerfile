@@ -72,6 +72,17 @@ RUN set -eux; \
     test -n "${chrome}"; \
     ln -s "${chrome}" /usr/local/bin/ogb-chromium
 
+# --- everyday programs of the agents (owner's request of 2026-11-15) ---------------------------------------------
+# What a person's computer usually has, so a bot can draw by hand (mtpaint, GIMP), edit video and pictures (ffmpeg and
+# ImageMagick above), work with office files (LibreOffice Writer and Calc, pandoc), download media (yt-dlp), handle data and
+# archives (jq, sqlite3, zip, 7z) and script in Python (numpy, matplotlib, requests). A separate layer: the base layer above
+# stays cached when this list changes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      mtpaint gimp libreoffice-writer libreoffice-calc pandoc yt-dlp \
+      jq sqlite3 zip unzip p7zip-full wget xclip xsel \
+      python3-pip python3-venv python3-numpy python3-matplotlib python3-requests \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- the owner's browser tool (`sakura-browser-worker`) ---------------------------------------------------------------
 # A local package of the owner, vendored unchanged (image/vendor/ORIGIN.md). The hash is checked before anything is installed; its
 # npm-shrinkwrap pins its dependencies, which come from NPM_REGISTRY.

@@ -29,8 +29,6 @@ export {
 export { isJsonObject, type JsonValue } from "./json.ts";
 export type { Decision, DecisionOutcome, Delivery, Signal, SignalDraft, SignalPriority, SignalSource, Trust } from "./signals.ts";
 export type {
-  HelperRunner,
-  HelperSpec,
   PluginContext,
   PluginLogger,
   RunOptions,

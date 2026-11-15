@@ -32,15 +32,38 @@ export function freshName(/** @type {readonly { title: string }[]} */ bots, /** 
   for (let n = 2; ; n += 1) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
 }
 
-const STATUS_LINE = { needs: "Needs you", error: "Stopped with an error", working: "Working", idle: "" };
+/**
+ * The scheduled results the page has not shown yet. `seen` maps a bot to the time of the last notice shown (kept in the
+ * browser). A bot seen for the first time with a notice only records it: opening the page must not replay old ones.
+ * @param {readonly { id: string, title: string, notice?: { at: number, text: string } }[]} bots
+ * @param {Record<string, number>} seen
+ * @returns {{ fresh: { id: string, title: string, text: string }[], seen: Record<string, number> }}
+ */
+export function freshNotices(bots, seen) {
+  /** @type {{ id: string, title: string, text: string }[]} */
+  const fresh = [];
+  /** @type {Record<string, number>} */
+  const next = {};
+  for (const bot of bots) {
+    const at = bot.notice?.at;
+    if (at === undefined) {
+      next[bot.id] = seen[bot.id] ?? 0; // seen, with nothing to show yet: its first notice will be shown
+      continue;
+    }
+    const last = seen[bot.id];
+    if (last !== undefined && at > last && bot.notice) fresh.push({ id: bot.id, title: bot.title, text: bot.notice.text });
+    next[bot.id] = Math.max(at, last ?? 0);
+  }
+  return { fresh, seen: next };
+}
 
 /**
- * The line under a bot's name in the rail: what it waits for, else its task summary, else the next scheduled job.
- * @param {{ summary?: string, next?: string }} bot
- * @param {"needs" | "error" | "working" | "idle"} status
+ * Which conversation the page opens with: the one the person had open last time if it still exists, else the bot with the
+ * latest message (the list is sorted that way), else none (then the page offers a new bot).
+ * @param {readonly { id: string }[]} bots
+ * @param {string | null} remembered
  */
-export function botLine(bot, status) {
-  if (status === "needs") return STATUS_LINE.needs;
-  const next = bot.next ? `next: ${bot.next}` : "";
-  return bot.summary || next || STATUS_LINE[status] || "No task yet";
+export function continueWith(bots, remembered) {
+  if (remembered && bots.some((bot) => bot.id === remembered)) return remembered;
+  return bots[0]?.id ?? null;
 }

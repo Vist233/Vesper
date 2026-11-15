@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { renderAgentsMd } from "@vesper/agents-md";
-import { CORE_TOOL_NAMES, OgbError, type PluginContext, type SignalDraft } from "@vesper/contracts";
+import { CORE_TOOL_NAMES, OgbError, type PluginContext, type SessionEvent, type SignalDraft } from "@vesper/contracts";
 import { createFileJournal, type EventJournal } from "@vesper/event-journal";
 import type { LoadedPlugin } from "@vesper/plugin-host";
 import type { ResolvedProfile } from "@vesper/profiles";
@@ -14,9 +14,10 @@ import { createCoreTools } from "./core-tools.ts";
 import { json } from "./events.ts";
 import { workspaceShell } from "./agent-environment.ts";
 import { createPersonTool, personPlugin } from "./person.ts";
+import { createSessionSearchTool } from "./session-search.ts";
+import { skillsPlugin } from "./skills.ts";
 import type { Scheduler } from "./scheduler.ts";
-import { summarize, summarySource } from "./summary.ts";
-import { createHelperRunner } from "./helpers.ts";
+import { lastReply, summarize, summarySource } from "./summary.ts";
 import { defaultSafetyPlugins } from "./safety.ts";
 import { type Authorize, createSearchTools } from "./search-tools.ts";
 import { deliverQueued, endTakeover, questionTimedOut, handbackTimedOut } from "./takeover.ts";
@@ -58,6 +59,10 @@ export interface AssemblyContext {
   scheduler: Scheduler;
   /** The person's profile shared by all bots (USER.md). */
   personFile: string;
+  /** True once after a scheduled job was delivered to this bot: the run's reply is then a notice for the person. */
+  takeNotice: (sessionId: string) => boolean;
+  /** Reads a bot's journal (for `session_search` across bots). */
+  readJournal: (sessionId: string) => Promise<readonly SessionEvent[]>;
 }
 
 /** The session's AGENTS.md: written for a new session, and again if the file is gone; an existing one is the agent's to keep editing. */
@@ -98,7 +103,6 @@ export async function assembleSession(ctx: AssemblyContext, record: SessionRecor
   const paths = deps.store.paths(record.id);
   const workspace = await deps.workspaces.ensure(record.id);
 
-  const helpers: { runner?: ReturnType<typeof createHelperRunner> } = {};
   const contextFor = (plugin: LoadedPlugin): PluginContext => ({
     workspace,
     secrets: deps.secrets,
@@ -112,12 +116,6 @@ export async function assembleSession(ctx: AssemblyContext, record: SessionRecor
     },
     dataDir: join(paths.dataDirectory, plugin.manifest.name),
     sharedDataDir: deps.store.sharedDirectory(plugin.manifest.name),
-    helpers: {
-      run: (spec) => {
-        if (!helpers.runner) throw new OgbError("internal", "helpers are used before the session has its model");
-        return helpers.runner.run(spec);
-      },
-    },
     log: {
       info: (message, fields) => log(record.id, { level: "info", plugin: plugin.manifest.name, message, ...fields }),
       warn: (message, fields) => log(record.id, { level: "warn", plugin: plugin.manifest.name, message, ...fields }),
@@ -131,6 +129,12 @@ export async function assembleSession(ctx: AssemblyContext, record: SessionRecor
   await mkdir(sharedDir, { recursive: true });
   await symlink(sharedDir, join(workspace.filesDir, "shared")).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "EEXIST") log(record.id, { level: "warn", message: "the shared folder could not be linked", error: String(error) });
+  });
+  // Skills every bot shares (docs/20 part 7): found, downloaded and written by the bots themselves, linked as `skills/`.
+  const skillsDir = deps.store.sharedDirectory("skills");
+  await mkdir(skillsDir, { recursive: true });
+  await symlink(skillsDir, join(workspace.filesDir, "skills")).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") log(record.id, { level: "warn", message: "the skills folder could not be linked", error: String(error) });
   });
   await writeAgentsMd({
     profile,
@@ -153,9 +157,14 @@ export async function assembleSession(ctx: AssemblyContext, record: SessionRecor
     await bridge.actor?.announce(type, json(payload));
   };
   const catalog = [
-    ...[...createCoreTools({ announce, workspace, sessionId: record.id, scheduler: ctx.scheduler }), createPersonTool(ctx.personFile)].map((tool) =>
-      gate(tool, { mode: "auto", book: approvals, announce }),
-    ),
+    ...[
+      ...createCoreTools({ announce, workspace, sessionId: record.id, scheduler: ctx.scheduler }),
+      createPersonTool(ctx.personFile),
+      createSessionSearchTool({
+        bots: async () => (await deps.store.list()).sessions.filter((s) => s.status === "active").map(({ id, title }) => ({ id, title })),
+        read: (id) => (id === record.id ? journal.read(id) : ctx.readJournal(id)),
+      }),
+    ].map((tool) => gate(tool, { mode: "auto", book: approvals, announce })),
     ...snapshot.tools.map((tool) => gate(tool, { mode: snapshot.toolOwners[tool.name]?.approval ?? "auto", book: approvals, announce })),
   ];
   const reviewer = safety.find((plugin) => typeof (plugin as { authorize?: unknown }).authorize === "function") as ReviewLike | undefined;
@@ -171,24 +180,19 @@ export async function assembleSession(ctx: AssemblyContext, record: SessionRecor
   const core = corePlugins().map((plugin) => (plugin.name === limits.name ? limits : plugin));
   const makeAgent = deps.createAgent ?? createAgent;
   const shell = workspaceShell(workspace.filesDir, workspace.environment);
-  helpers.runner = createHelperRunner({
-    llm,
-    cwd: workspace.filesDir,
-    environment: shell,
-    safety,
-    createAgent: makeAgent,
-    log: (entry) => log(record.id, entry),
-  });
   const agent = await makeAgent({
     model: llm,
     cwd: workspace.filesDir,
     environment: shell,
     tools: [...CORE_TOOL_NAMES.original, ...searchTools, ...catalog.filter((tool) => declared.has(tool.name))],
-    plugins: [...safety, ...core, waitingForPersonPlugin(), personPlugin(ctx.personFile)],
+    plugins: [...safety, ...core, waitingForPersonPlugin(), personPlugin(ctx.personFile), skillsPlugin(skillsDir)],
     ...(deps.models.maxTokens(profile.model) !== undefined ? { maxTokens: deps.models.maxTokens(profile.model) as number } : {}),
     sessionFile: paths.agentFile,
     ...(deps.subAgents === false ? {} : { subAgents: deps.subAgents ?? {} }),
+    ...(deps.mcp && Object.keys(deps.mcp.servers).length > 0 ? { mcp: { expose: "direct" as const, ...deps.mcp } } : {}),
   });
+  for (const [server, status] of Object.entries(agent.mcp ?? {}))
+    if (!status.ok) log(record.id, { level: "warn", message: "an MCP server did not start", server, error: status.error ?? "" });
 
   const journal = deps.journalFor ? deps.journalFor(paths.journalDirectory) : createFileJournal({ directory: paths.journalDirectory, now });
   const schedule =
@@ -228,6 +232,17 @@ export async function assembleSession(ctx: AssemblyContext, record: SessionRecor
     // The summary line (docs/18 section 2): one small model call after each run; a failure keeps the old line.
     afterRun: () =>
       void (async () => {
+        const reply = lastReply(await journal.read(record.id));
+        if (reply && !/^\[SILENT\]$/.test(reply)) await deps.store.update(record.id, { last: { at: now(), who: "bot", text: reply.slice(0, 200) } });
+        if (ctx.takeNotice(record.id)) {
+          // A scheduled run: its reply is what the person should get, unless it chose not to disturb them.
+          if (reply && !/^\[SILENT\]$/.test(reply)) {
+            const notice = { at: now(), text: reply.slice(0, 300) };
+            await deps.store.update(record.id, { notice });
+            await bridge.actor?.announce("session.notice", notice);
+            deps.notify?.(record.id, { title: (await deps.store.get(record.id)).title, ...notice });
+          }
+        }
         if (!deps.summaries) return;
         const source = summarySource(await journal.read(record.id));
         if (!source) return;

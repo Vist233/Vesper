@@ -1,7 +1,7 @@
 {
   "name": "computer",
   "version": "0.1.0",
-  "description": "Use the workspace's desktop (pointer and keyboard) through a helper agent. Last resort, after commands, APIs and the browser.",
+  "description": "The workspace's desktop (programs, dialogs, drawing by hand) for the agent and its sub-agents.",
   "license": "MIT",
   "extensions": {
     "vesper": {

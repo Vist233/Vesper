@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileSessionStore } from "@vesper/session-store";
@@ -48,6 +48,31 @@ describe("when a scheduled job is due", () => {
     expect(await scheduler.cancel(bot.id, (await scheduler.list(bot.id))[0]?.id as string)).toBe(true);
     expect(await scheduler.list(bot.id)).toEqual([]);
   });
+
+  it("pauses and resumes a job, and runs one now: a one-shot is used up, a repeating one keeps its time", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ogb-sched-"));
+    dirs.push(root);
+    const store = createFileSessionStore({ root });
+    const bot = await store.create({ title: "Scout", profile: {} });
+    let now = T0;
+    const delivered: string[] = [];
+    const scheduler = createScheduler({ store, now: () => now, log: () => {}, deliver: async (_id, job) => void delivered.push(job.prompt) });
+    const daily = await scheduler.add(bot.id, "every 1h", "digest");
+    const once = await scheduler.add(bot.id, "in 10m", "remind");
+    expect((await scheduler.setPaused(bot.id, daily.id, true))?.paused).toBe(true);
+    now = T0 + 2 * 3_600_000;
+    await scheduler.tick();
+    expect(delivered).toEqual(["remind"]); // the paused one stayed quiet
+    const resumed = await scheduler.setPaused(bot.id, daily.id, false);
+    expect(resumed).toMatchObject({ next: now + 3_600_000 });
+    expect(resumed?.paused).toBeUndefined();
+    expect(await scheduler.setPaused(bot.id, "j_none", true)).toBeNull();
+    await scheduler.runNow(bot.id, daily.id);
+    expect(delivered).toEqual(["remind", "digest"]);
+    expect((await scheduler.list(bot.id)).map((j) => j.id)).toEqual([daily.id]); // kept, with its time
+    expect(once.id).not.toBe(daily.id);
+    expect(await scheduler.runNow(bot.id, "j_none")).toBeNull();
+  });
 });
 
 describe("the person's profile", () => {
@@ -66,19 +91,27 @@ describe("the person's profile", () => {
 describe("a bot that schedules itself and knows the person", () => {
   it("adds a job with the tool, is woken by it in the same conversation, and every run sees the shared profile", async () => {
     let clock = T0;
+    const notices: { id: string; title: string; text: string }[] = [];
     const r = createRig({
-      runtime: { now: () => clock, scheduleIntervalMs: 30 },
+      runtime: { now: () => clock, scheduleIntervalMs: 30, notify: (id, notice) => void notices.push({ id, ...notice }) },
       profiles: { default: "general", profiles: { general: { plugins: [], alwaysDeclaredTools: ["schedule", "remember_person"] } } },
       script: (request, index) => {
         if (index === 0) return { toolCalls: [{ name: "schedule", args: { action: "add", when: "in 5m", prompt: "Tell the person the price." } }] };
         if (index === 1) return { toolCalls: [{ name: "remember_person", args: { action: "add", line: "Prefers short answers" } }] };
         if (index === 2) return { text: "Scheduled." };
-        return { text: request.system.includes("Prefers short answers") ? "price: 42 (profile seen)" : "price: 42" };
+        const seen = [
+          request.system.includes("Prefers short answers") ? "profile seen" : "",
+          request.system.includes("- publish-blog: Publish a post") ? "skill seen" : "",
+        ];
+        return { text: `price: 42 (${seen.filter(Boolean).join(", ")})` };
       },
     });
     rigs.push(r);
     const bot = await r.runtime.createSession({ title: "Scout" });
     await r.runtime.resumeAll(); // starts the clock
+    // A skill another bot downloaded: every run lists the shared skills folder (name and description only).
+    mkdirSync(join(r.root, "shared", "skills", "publish-blog"), { recursive: true });
+    writeFileSync(join(r.root, "shared", "skills", "publish-blog", "SKILL.md"), "---\nname: publish-blog\ndescription: Publish a post on a blog\n---\n");
     await r.runtime.send(bot.id, "watch the price and tell me in 5 minutes");
     await r.runtime.whenIdle(bot.id);
     expect(readFileSync(join(r.root, "shared", "person", "USER.md"), "utf8")).toContain("Prefers short answers");
@@ -91,7 +124,11 @@ describe("a bot that schedules itself and knows the person", () => {
     const events = await r.runtime.read(bot.id);
     const woke = events.find((e) => e.type === "message.user" && JSON.stringify(e.payload).includes("Tell the person the price"));
     expect(woke).toBeDefined();
-    expect(JSON.stringify(events.filter((e) => e.type === "message.assistant").at(-1)?.payload)).toContain("profile seen");
+    expect(JSON.stringify(events.filter((e) => e.type === "message.assistant").at(-1)?.payload)).toContain("profile seen, skill seen");
     expect((await r.runtime.list()).find((s) => s.id === bot.id)?.next).toBeUndefined(); // the one-shot job is gone
+    // The scheduled run's reply is a notice for the person: in the bot's info (the page) and through the delivery port.
+    await expect.poll(async () => (await r.runtime.list()).find((s) => s.id === bot.id)?.notice?.text).toContain("price: 42");
+    await expect.poll(() => notices.length).toBe(1);
+    expect(notices).toEqual([{ id: bot.id, title: "Scout", at: expect.any(Number), text: expect.stringContaining("price: 42") }]);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { botLine, freshName, STARS, starOf } from "../src/bots.js";
+import { continueWith, freshName, freshNotices, STARS, starOf } from "../src/bots.js";
 import { parseInline, parseMarkdown, safeHref } from "../src/markdown.js";
 
 describe("bots in the rail", () => {
@@ -15,13 +15,33 @@ describe("bots in the rail", () => {
     expect(starOf({ id: "s_abc" })).toBe(starOf({ id: "s_abc" }));
     expect(STARS.map((s) => s.id)).toEqual(["vega", "lyra", "altair", "polaris", "rigel", "sirius"]);
   });
+});
 
-  it("says what waits, else the task, else the next job", () => {
-    expect(botLine({ summary: "watch the inbox" }, "needs")).toBe("Needs you");
-    expect(botLine({ summary: "watch the inbox", next: "daily 07:30" }, "working")).toBe("watch the inbox");
-    expect(botLine({ next: "daily 07:30" }, "idle")).toBe("next: daily 07:30");
-    expect(botLine({}, "idle")).toBe("No task yet");
-    expect(botLine({}, "working")).toBe("Working");
+describe("the conversation the page opens with", () => {
+  it("continues the one open last time, else the latest, else none", () => {
+    const bots = [{ id: "s_new" }, { id: "s_old" }];
+    expect(continueWith(bots, "s_old")).toBe("s_old");
+    expect(continueWith(bots, "s_gone")).toBe("s_new");
+    expect(continueWith(bots, null)).toBe("s_new");
+    expect(continueWith([], "s_old")).toBeNull();
+  });
+});
+
+describe("notices of scheduled runs", () => {
+  it("shows a notice newer than the last one shown, never replays old ones on the first look, and forgets deleted bots", () => {
+    const first = freshNotices(
+      [
+        { id: "a", title: "Vega", notice: { at: 10, text: "old" } },
+        { id: "b", title: "Lyra" },
+      ],
+      {},
+    );
+    expect(first).toEqual({ fresh: [], seen: { a: 10, b: 0 } });
+    expect(freshNotices([{ id: "b", title: "Lyra", notice: { at: 5, text: "first" } }], first.seen).fresh).toEqual([{ id: "b", title: "Lyra", text: "first" }]);
+    const second = freshNotices([{ id: "a", title: "Vega", notice: { at: 20, text: "price 42" } }], first.seen);
+    expect(second).toEqual({ fresh: [{ id: "a", title: "Vega", text: "price 42" }], seen: { a: 20 } });
+    expect(freshNotices([{ id: "a", title: "Vega", notice: { at: 20, text: "price 42" } }], second.seen).fresh).toEqual([]);
+    expect(freshNotices([], second.seen).seen).toEqual({});
   });
 });
 

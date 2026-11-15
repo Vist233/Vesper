@@ -13,6 +13,8 @@ export interface ScheduledJob {
   next: number;
   everyMs?: number;
   daily?: string;
+  /** A paused job keeps its place but does not run until resumed. */
+  paused?: boolean;
 }
 
 export const MAX_JOBS = 20;
@@ -87,13 +89,14 @@ export function createScheduler(options: {
     const now = options.now();
     const { sessions } = await options.store.list();
     for (const record of sessions) {
-      if (record.status !== "active" || !jobsOf(record.schedules).some((job) => job.next <= now)) continue;
+      const isDue = (job: ScheduledJob) => job.next <= now && !job.paused;
+      if (record.status !== "active" || !jobsOf(record.schedules).some(isDue)) continue;
       const due = await change(record.id, (jobs) => {
-        const fired = jobs.filter((job) => job.next <= now);
+        const fired = jobs.filter(isDue);
         const kept = jobs
-          .filter((job) => job.next > now || job.everyMs !== undefined || job.daily !== undefined)
+          .filter((job) => !isDue(job) || job.everyMs !== undefined || job.daily !== undefined)
           .map((job) => {
-            if (job.next > now) return job;
+            if (!isDue(job)) return job;
             if (job.everyMs !== undefined) return { ...job, next: now + job.everyMs };
             return { ...job, next: nextDaily(job.daily as string, now) };
           });
@@ -131,6 +134,31 @@ export function createScheduler(options: {
         const job: ScheduledJob = { id: `j_${randomBytes(4).toString("hex")}`, when: when.trim(), prompt: text, ...parseWhen(when, options.now()) };
         return { jobs: [...jobs, job], result: job };
       }),
+    /** Pauses or resumes a job; a resumed job whose time passed runs at the next check (a repeating one moves to its next time). */
+    setPaused: (sessionId: string, id: string, paused: boolean) =>
+      change(sessionId, (jobs) => {
+        const now = options.now();
+        let found: ScheduledJob | null = null;
+        const next = jobs.map((job) => {
+          if (job.id !== id) return job;
+          const moved =
+            paused || job.next > now ? job.next : job.everyMs !== undefined ? now + job.everyMs : job.daily !== undefined ? nextDaily(job.daily, now) : now;
+          found = { ...job, next: moved, ...(paused ? { paused: true } : {}) };
+          if (!paused) delete (found as ScheduledJob).paused;
+          return found;
+        });
+        return { jobs: next, result: found as ScheduledJob | null };
+      }),
+    /** Runs a job now. A one-shot job is used up; a repeating one keeps its next time. */
+    runNow: async (sessionId: string, id: string) => {
+      const job = await change(sessionId, (jobs) => {
+        const found = jobs.find((candidate) => candidate.id === id) ?? null;
+        const once = found && found.everyMs === undefined && found.daily === undefined;
+        return { jobs: once ? jobs.filter((candidate) => candidate.id !== id) : jobs, result: found };
+      });
+      if (job) await options.deliver(sessionId, job, false);
+      return job;
+    },
     cancel: (sessionId: string, id: string) =>
       change(sessionId, (jobs) => ({ jobs: jobs.filter((job) => job.id !== id), result: jobs.some((job) => job.id === id) })),
   };

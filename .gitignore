@@ -11,3 +11,4 @@ test/e2e/results/
 
 # The owner's browser tool, vendored unchanged and committed on purpose (image/vendor/ORIGIN.md)
 !image/vendor/browser-tool/*.tgz
+.test-results/

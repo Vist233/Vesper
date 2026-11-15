@@ -2,9 +2,10 @@
 // Builds DOM nodes for the view model. Text goes in with `textContent` only: there is no innerHTML anywhere in the page,
 // so a message that contains markup is shown as the characters it is made of.
 
+import { clockTime } from "./chat.js";
 import { parseMarkdown } from "./markdown.js";
 import { formatBytes, hostOf } from "./text.js";
-import { activitySummary, questionMarker } from "./timeline.js";
+import { questionMarker } from "./timeline.js";
 
 /** @typedef {import("./model.js").Item} Item */
 /** @typedef {Extract<Item, { kind: "tool" }>} ToolItem */
@@ -282,21 +283,69 @@ function renderApproval(li, item, actions) {
 }
 
 /**
- * One quiet line for a block of tool calls (owner's items 3 and 9): a small spinner and what the agent is doing while it
- * works, then "Worked 2m · 5 steps". No inputs, outputs or failure counts here: those are in the logs for whoever runs the box.
- * @param {string} key
- * @param {readonly ToolItem[]} tools
+ * One entry of the chat (chat.js): a day separator, a message bubble on the person's side or the bot's, or a quiet line in
+ * the middle (a note from the box, text from outside). Every bubble carries its time; the last of a group has a tail.
+ * @param {import("./chat.js").ChatEntry} entry
+ * @param {Actions} actions
+ * @returns {HTMLLIElement}
  */
-export function renderActivity(key, tools) {
-  const summary = activitySummary(tools);
-  const li = /** @type {HTMLLIElement} */ (h("li"));
-  li.dataset.kind = "activity";
-  li.dataset.key = key;
-  const line = h("div", { class: `activity${summary.running ? " running" : ""}` }, [
-    h("span", { class: "spinner", attrs: { "aria-hidden": "true" } }),
-    h("span", { class: "label", text: summary.label }),
-  ]);
-  if (!summary.running && summary.waiting > 0) line.append(h("span", { class: "waiting", text: `· ${summary.waiting} waiting for you` }));
-  li.append(line);
+export function renderEntry(entry, actions) {
+  if (entry.type === "day") return /** @type {HTMLLIElement} */ (h("li", { class: "day", attrs: { "data-kind": "day" } }, [h("span", { text: entry.label })]));
+  const { item, side, tail } = entry;
+  const li = /** @type {HTMLLIElement} */ (h("li", { class: `row ${side}${tail ? " tail" : ""}` }));
+  li.dataset.kind = item.kind;
+  const time = h("span", { class: "time", text: clockTime(item.at) });
+  if (side === "center") {
+    if (item.kind === "note") {
+      const line = h("div", { class: `chip-line${item.level === "error" ? " error" : ""}`, attrs: { role: item.level === "error" ? "alert" : "note" } }, [
+        h("span", { text: item.text }),
+      ]);
+      if (item.retryable) {
+        const retry = h("button", { class: "link", text: "Try again", attrs: { type: "button" } });
+        retry.addEventListener("click", () => actions.retry());
+        line.append(retry);
+      }
+      li.append(line);
+    } else if (item.kind === "signal") {
+      li.append(
+        h("div", { class: "chip-line outside" }, [
+          h("strong", { text: item.source.replace(/^plugin:/, "") }),
+          h("span", { text: ` ${item.text.replace(/\s+/g, " ").slice(0, 160)}` }),
+        ]),
+      );
+    }
+    return li;
+  }
+  const bubble = h("div", { class: "bubble" });
+  switch (item.kind) {
+    case "user":
+      bubble.append(h("div", { class: "plain", text: item.text }));
+      if (item.attachments.length > 0)
+        bubble.append(
+          h(
+            "ul",
+            { class: "attached", attrs: { "aria-label": "Attached files" } },
+            item.attachments.map((file) => h("li", { text: `${file.name} · ${formatBytes(file.size)}`, attrs: { title: file.path || file.name } })),
+          ),
+        );
+      break;
+    case "assistant":
+    case "say":
+      bubble.append(richText(item.text, actions));
+      break;
+    case "question":
+      bubble.classList.add("asks");
+      bubble.append(h("div", { class: "plain", text: item.question }));
+      if (item.answered) bubble.append(h("div", { class: "answered", text: "Answered" }));
+      break;
+    case "approval":
+      bubble.classList.add("asks");
+      bubble.append(h("div", { class: "plain", text: item.status === "pending" ? `May I use ${item.tool}?` : questionMarker(item) }));
+      break;
+    default:
+      break;
+  }
+  bubble.append(time);
+  li.append(bubble);
   return li;
 }

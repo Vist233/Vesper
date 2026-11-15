@@ -113,8 +113,8 @@ describe("browser plugin with a real sub-agent", () => {
   });
 });
 
-describe("computer plugin: a helper agent keeps the screen out of the main context", () => {
-  it("the helper reads the tree, clicks and takes a screenshot; the main agent sees only its report; every desktop action is reviewed", async () => {
+describe("computer plugin: the agent uses the desktop itself, and a sub-agent can too", () => {
+  it("the agent reads the tree, clicks and takes a screenshot with its own desktop tool; every action is reviewed", async () => {
     const reviewed: string[] = [];
     const reviewer = createFauxClient((request) => {
       const last = JSON.stringify(request.messages.at(-1));
@@ -123,71 +123,60 @@ describe("computer plugin: a helper agent keeps the screen out of the main conte
     });
     const rig = createRig({
       plugins: install("computer"),
-      profiles: { default: "p", profiles: { p: { plugins: ["computer"] } } },
+      profiles: { default: "p", profiles: { p: { plugins: ["computer"], alwaysDeclaredTools: ["desktop"] } } },
       workspace: { display: "fake:desktop" },
       runtime: { safetyPlugins: () => [reviewPlugin({ llm: reviewer })] },
+      script: (request) =>
+        [
+          { toolCalls: [{ name: "desktop", args: { action: "tree" } }] },
+          { toolCalls: [{ name: "desktop", args: { action: "click", ref: "w1" } }] },
+          { toolCalls: [{ name: "desktop", args: { action: "screenshot" } }] },
+          { text: "Pressed Save; the dialog closed." },
+        ][toolResultTexts(request as never).length] ?? { text: "done" },
+    });
+    cleanups.push(() => rig.cleanup());
+    const { id } = await rig.runtime.createSession();
+    await rig.runtime.send(id, "save the document");
+    await rig.runtime.whenIdle(id);
+    expect(toolNames(rig.faux.requests[0] as never)).toContain("desktop"); // declared to the agent itself
+    expect(JSON.stringify(rig.faux.requests.at(-1)?.messages)).toContain("w1 button"); // it saw the tree
+    expect(reviewed.filter((name) => name === "desktop")).toHaveLength(3);
+  });
+
+  it("a large desktop job goes to a sub-agent with delegate, which has the desktop tool too", async () => {
+    const rig = createRig({
+      plugins: install("computer"),
+      profiles: { default: "p", profiles: { p: { plugins: ["computer"], alwaysDeclaredTools: ["desktop"] } } },
+      workspace: { display: "fake:desktop" },
       script: (request) => {
         const results = toolResultTexts(request as never);
-        if (toolNames(request as never).includes("desktop")) {
-          return (
-            [
-              { toolCalls: [{ name: "desktop", args: { action: "tree" } }] },
-              { toolCalls: [{ name: "desktop", args: { action: "click", ref: "w1" } }] },
-              { toolCalls: [{ name: "desktop", args: { action: "screenshot" } }] },
-              { text: "Pressed Save; the dialog closed." },
-            ][results.length] ?? { text: "done" }
-          );
-        }
-        if (results.length === 0)
-          return call("computer", { task: "Press Save in the open dialog.", why_not_cheaper: "It is a native dialog that no command or web page reaches." });
-        return { text: "saved" };
+        const isParent = request.tools.some((t) => t.name === "delegate");
+        if (!isParent)
+          return results.length === 0 ? { toolCalls: [{ name: "desktop", args: { action: "click", ref: "w1" } }] } : { text: "Clicked Save in the dialog." };
+        return results.length === 0 ? { toolCalls: [{ name: "delegate", args: { message: "Click Save in the open dialog and report." } }] } : { text: "saved" };
       },
     });
     cleanups.push(() => rig.cleanup());
     const { id } = await rig.runtime.createSession();
     await rig.runtime.send(id, "save the document");
     await rig.runtime.whenIdle(id);
-
-    const mainRequests = rig.faux.requests.filter((r) => !r.tools.some((t) => t.name === "desktop"));
-    const helperRequests = rig.faux.requests.filter((r) => r.tools.some((t) => t.name === "desktop"));
-    expect(helperRequests).toHaveLength(4);
-    expect(helperRequests[0]?.tools.map((t) => t.name)).toEqual(["desktop"]); // the helper has the desktop tool and nothing else
-    expect(toolNames(mainRequests[0] as never)).not.toContain("desktop"); // the main agent never sees it ...
-    expect(toolNames(mainRequests[0] as never)).not.toContain("computer"); // ... and `computer` is found by search, not declared
-    const mainTexts = JSON.stringify(mainRequests.map((r) => r.messages));
-    expect(mainTexts).toContain("Pressed Save; the dialog closed."); // the report reaches the main agent
-    expect(mainTexts).not.toContain("w1 button"); // the tree stays with the helper
-    expect(mainTexts).not.toContain("/fake/screen.png"); // and so does the screenshot
-    expect(JSON.stringify(helperRequests.at(-1)?.messages)).toContain("/fake/screen.png");
-    expect(JSON.stringify(helperRequests[0]?.messages)).not.toContain("save the document"); // the helper does not see the main conversation
-
-    // the inner call to `computer` and each desktop action were reviewed, each under its own name
-    expect(reviewed.filter((name) => name === "computer")).toHaveLength(1);
-    expect(reviewed.filter((name) => name === "desktop")).toHaveLength(3);
-    expect(reviewed).not.toContain("tool_call");
+    const child = rig.faux.requests.find((r) => !r.tools.some((t) => t.name === "delegate"));
+    expect(child?.tools.map((t) => t.name)).toContain("desktop"); // the sub-agent inherited the desktop tool
+    expect(JSON.stringify(rig.faux.requests.at(-1)?.messages)).toContain("Clicked Save"); // its report came back
   });
 
-  it("with a real display name the helper's desktop tool drives the owner's gui kit through the workspace's run()", async () => {
+  it("with a real display name the desktop tool drives the owner's gui kit through the workspace's run()", async () => {
     const kit = createFakeKit();
     const rig = createRig({
       plugins: install("computer"),
-      profiles: { default: "p", profiles: { p: { plugins: ["computer"] } } },
+      profiles: { default: "p", profiles: { p: { plugins: ["computer"], alwaysDeclaredTools: ["desktop"] } } },
       workspace: { display: ":101" },
-      script: (request) => {
-        const results = toolResultTexts(request as never);
-        if (toolNames(request as never).includes("desktop")) {
-          return (
-            [
-              { toolCalls: [{ name: "desktop", args: { action: "tree" } }] },
-              { toolCalls: [{ name: "desktop", args: { action: "click", ref: "w1" } }] },
-              { text: "Clicked Save." },
-            ][results.length] ?? { text: "done" }
-          );
-        }
-        return results.length === 0
-          ? call("computer", { task: "Click Save.", why_not_cheaper: "It is a native dialog that nothing else reaches." })
-          : { text: "saved" };
-      },
+      script: (request) =>
+        [
+          { toolCalls: [{ name: "desktop", args: { action: "tree" } }] },
+          { toolCalls: [{ name: "desktop", args: { action: "click", ref: "w1" } }] },
+          { text: "Clicked Save." },
+        ][toolResultTexts(request as never).length] ?? { text: "done" },
     });
     rig.workspaces.onRun.handler = (c) => kit.run(c.command, c.options);
     cleanups.push(() => rig.cleanup());
@@ -196,21 +185,5 @@ describe("computer plugin: a helper agent keeps the screen out of the main conte
     await rig.runtime.whenIdle(id);
     expect(kit.actions).toEqual(["click w1"]);
     expect(kit.commands.map((c) => c.command[1]?.split("/").pop())).toEqual(["observe.py", "act.py"]);
-    expect(JSON.stringify(rig.faux.requests.at(-1)?.messages)).toContain("Clicked Save.");
-  });
-
-  it("refuses a call without a reason and does not start a helper", async () => {
-    const rig = createRig({
-      plugins: install("computer"),
-      profiles: { default: "p", profiles: { p: { plugins: ["computer"] } } },
-      workspace: { display: "fake:desktop" },
-      script: (request) => (toolResultTexts(request as never).length === 0 ? call("computer", { task: "do something on the desktop" }) : { text: "ok" }),
-    });
-    cleanups.push(() => rig.cleanup());
-    const { id } = await rig.runtime.createSession();
-    await rig.runtime.send(id, "go");
-    await rig.runtime.whenIdle(id);
-    expect(rig.faux.requests).toHaveLength(2); // the main agent asked twice; no helper request in between
-    expect(toolResultTexts(rig.faux.requests[1] as never)[0]).toContain("'why_not_cheaper' is required");
   });
 });

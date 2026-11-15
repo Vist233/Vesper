@@ -102,6 +102,18 @@ export function createGuiKitBackend(options: GuiKitOptions): DesktopBackend {
       ])) as { ok?: boolean } | null;
       if (!data?.ok) throw new Error("The desktop could not complete the drag.");
     },
+    async launch(program, args) {
+      // setsid -f: the program runs on in its own session after this call returns; its window appears on the workspace's display.
+      // Its output goes nowhere: a program that keeps our pipes open would keep this call waiting for ever.
+      const result = await options.run(["sh", "-c", 'setsid -f "$0" "$@" </dev/null >/dev/null 2>&1', program, ...args], runOptions({ timeoutMs: 10_000 }));
+      if (result.exitCode !== 0) throw new Error(`${program} could not be started (exit ${result.exitCode}): ${result.stderr.slice(0, 200)}`);
+    },
+    async path(points) {
+      // One xdotool call: press at the first point, move through the rest, release. Short pauses let the program draw each segment.
+      const [first, ...rest] = points.map((point) => [String(Math.round(point.x)), String(Math.round(point.y))] as const);
+      if (!first) return;
+      await xdotool(["mousemove", ...first, "mousedown", "1", ...rest.flatMap((point) => ["mousemove", ...point, "sleep", "0.01"]), "mouseup", "1"]);
+    },
     async type(text) {
       await xdotool(["type", "--clearmodifiers", "--delay", "20", "--", text]);
     },

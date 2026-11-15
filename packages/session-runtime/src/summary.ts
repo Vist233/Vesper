@@ -23,6 +23,19 @@ export function summarySource(events: readonly SessionEvent[]): { person: string
   return person.length === 0 ? null : { person: person.slice(-4), reply };
 }
 
+/** The agent's last reply of the journal, trimmed; "" when it has none. */
+export function lastReply(events: readonly SessionEvent[]): string {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i] as SessionEvent;
+    const payload = event.payload as { role?: string; content?: { type: string; text?: string }[] } | null;
+    if (event.type === "message.assistant" && payload?.role === "assistant" && payload.content) {
+      const text = textOf(payload.content).trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
 /** One small model call; undefined when the model gives nothing usable (the old summary then stays). */
 export async function summarize(llm: LlmClient, source: { person: string[]; reply: string }, signal: AbortSignal): Promise<string | undefined> {
   const transcript = [...source.person.map((text) => `Person: ${text}`), ...(source.reply ? [`Assistant: ${source.reply}`] : [])].join("\n\n");

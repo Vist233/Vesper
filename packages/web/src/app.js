@@ -10,10 +10,11 @@ import { createFiles } from "./files-ui.js";
 import { clampDeskFrac, deskLayout, fracOf } from "./layout.js";
 import { loadPrefs, savePrefs } from "./prefs.js";
 import { applyEvent, createState, pendingActions } from "./model.js";
-import { botLine, freshName, STARS, starOf } from "./bots.js";
-import { h, renderActivity, renderItem, star } from "./render.js";
+import { continueWith, freshName, freshNotices, STARS, starOf } from "./bots.js";
+import { chatTimeline, listTime, presence, preview } from "./chat.js";
+import { h, renderEntry, renderItem, star } from "./render.js";
 import { greeting, startupWarnings } from "./text.js";
-import { clock, composerButton, deskIntent, groupTimeline, needsYou, nowLine, railStatus, titleBadge } from "./timeline.js";
+import { composerButton, deskIntent, needsYou, railStatus, titleBadge } from "./timeline.js";
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const input = (/** @type {string} */ id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
@@ -89,21 +90,23 @@ async function pollHealth() {
 }
 
 // ---------- the rail ----------
-/** @type {{ id: string, title: string, createdAt: number, star?: string, summary?: string, next?: string, status: string, state: { run: string, held: boolean, queued: number } | null, pending: number, lastRunEnd: string | null, takeover: boolean }[]} */
+/** @type {{ id: string, title: string, createdAt: number, notice?: { at: number, text: string }, last?: { at: number, who: "person" | "bot", text: string }, star?: string, summary?: string, next?: string, status: string, state: { run: string, held: boolean, queued: number } | null, pending: number, lastRunEnd: string | null, takeover: boolean }[]} */
 let rows = [];
 /** @type {{ profiles: string[], defaultProfile?: string, models: string[], takeover: boolean, liveView: boolean, files: boolean, limits: { fileBytes: number, files: number }, startup: unknown[] }} */
 let options = { profiles: [], models: [], takeover: false, liveView: false, files: false, limits: { fileBytes: 25 * 1024 * 1024, files: 20 }, startup: [] };
 /** @type {string | null} */
 let selected = null;
 
+/** @param {{ createdAt: number, last?: { at: number } }} a @param {{ createdAt: number, last?: { at: number } }} b */
+const byLatest = (a, b) => (b.last?.at ?? b.createdAt) - (a.last?.at ?? a.createdAt);
+
 async function refreshSessions() {
   try {
-    // Newest bot first: the one just made is at the top of the list, not below the fold.
-    rows = (await api.listSessions()).sessions.sort(
-      (/** @type {{ createdAt: number }} */ a, /** @type {{ createdAt: number }} */ b) => b.createdAt - a.createdAt,
-    );
+    // As in a chat app: the bot with the latest message first; a new bot (no message yet) by when it was made.
+    rows = (await api.listSessions()).sessions.sort(byLatest);
     renderRail();
     renderHeader(); // a new summary or name arrives with the list, not with an event
+    showNotices();
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) setConnection("unauthorized");
   }
@@ -130,10 +133,21 @@ function renderRail() {
         ? { state: { run: model.run }, pending: pendingActions(model), lastRunEnd: model.lastRunEnd, takeover: Boolean(model.takeover) }
         : row;
     const status = railStatus(live);
+    // A contact as in a chat app: who, their last message (or "typing…"), when, and how many things wait for you.
+    const line = preview(row, status);
+    const pending = row.id === selected ? needsYou(model).length : row.pending;
     const button = h("button", { attrs: { type: "button", "aria-current": String(row.id === selected), "data-status": status, title: row.title } }, [
-      avatar(row, 22),
-      h("span", { class: "who" }, [h("span", { class: "title", text: row.title }), h("span", { class: "line", text: botLine(row, status) })]),
-      star("dot", 8),
+      avatar(row, 24),
+      h("span", { class: "who" }, [
+        h("span", { class: "c-head" }, [
+          h("span", { class: "title", text: row.title }),
+          h("span", { class: "when", text: row.last ? listTime(row.last.at, Date.now()) : "" }),
+        ]),
+        h("span", { class: "c-msg" }, [
+          h("span", { class: `line${line.tone ? ` ${line.tone}` : ""}`, text: line.text }),
+          pending > 0 ? h("span", { class: "badge", text: String(pending), attrs: { "aria-label": `${pending} waiting for you` } }) : null,
+        ]),
+      ]),
       h("span", { class: "sr", text: STATUS_WORDS[status] }),
     ]);
     button.addEventListener("click", () => {
@@ -147,6 +161,42 @@ function renderRail() {
   }
   scroller.scrollTop = scrolled;
 }
+
+// ---------- notices: the result of a scheduled run reaches the person as a browser notification ----------
+const seenKey = "ogb-notices-seen";
+function showNotices() {
+  /** @type {Record<string, number>} */
+  let seen = {};
+  try {
+    seen = JSON.parse(localStorage.getItem(seenKey) ?? "{}");
+  } catch {
+    // no storage: every page load starts fresh, which only means old notices are not replayed
+  }
+  const { fresh, seen: next } = freshNotices(rows, seen);
+  try {
+    localStorage.setItem(seenKey, JSON.stringify(next));
+  } catch {
+    // see above
+  }
+  for (const notice of fresh) {
+    if (notice.id === selected && document.visibilityState === "visible") continue; // already in front of the person
+    if (!("Notification" in window) || Notification.permission !== "granted") continue;
+    const shown = new Notification(notice.title, { body: notice.text, tag: `ogb-${notice.id}`, icon: "/favicon-32.png" });
+    shown.addEventListener("click", () => {
+      window.focus();
+      location.hash = `#/s/${notice.id}`;
+      shown.close();
+    });
+  }
+}
+function renderNotifyButton() {
+  $("notify-me").hidden = !("Notification" in window) || Notification.permission !== "default";
+}
+$("notify-me").addEventListener("click", async () => {
+  await Notification.requestPermission().catch(() => "denied");
+  renderNotifyButton();
+});
+renderNotifyButton();
 
 $("rail-toggle").addEventListener("click", () => {
   railOpen = !railOpen;
@@ -318,9 +368,15 @@ function leaveSession() {
   banner("gaps", null);
 }
 
+const lastBotKey = "ogb-last-bot";
 async function openSession(/** @type {string} */ id) {
   leaveSession();
   selected = id;
+  try {
+    localStorage.setItem(lastBotKey, id);
+  } catch {
+    // no storage: the next visit opens the bot with the latest message
+  }
   renderRail();
   try {
     const endedBefore = takeoversEnded;
@@ -371,37 +427,44 @@ function scheduleRender() {
   setTimeout(run, 100);
 }
 
-/** Signature of a block: changes exactly when something visible in it can have changed. */
-function signature(/** @type {ReturnType<typeof groupTimeline>[number]} */ block) {
-  const revOf = (/** @type {any} */ item) => item.rev ?? 0;
-  if (block.type === "item") return String(revOf(block.item));
-  return `${block.tools.length}:${block.tools.reduce((sum, tool) => sum + revOf(tool), 0)}`;
+/** Signature of a chat entry: changes exactly when something visible in it can have changed (its text, its tail, its day label). */
+function signature(/** @type {import("./chat.js").ChatEntry} */ entry) {
+  if (entry.type === "day") return entry.label;
+  return `${/** @type {any} */ (entry.item).rev ?? 0}:${entry.tail}`;
 }
 
 function render() {
   const timeline = $("timeline");
   const scroller = $("scroller");
   const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-  for (const block of groupTimeline(model.items)) {
-    const sig = signature(block);
-    const known = blockEls.get(block.key);
+  const loaded = blockEls.size > 0; // a history that loads all at once arrives without motion; later messages move in
+  for (const entry of chatTimeline(model.items, Date.now())) {
+    const sig = signature(entry);
+    const known = blockEls.get(entry.key);
     if (known?.sig === sig) continue;
-    const el = block.type === "activity" ? renderActivity(block.key, block.tools) : renderItem(block.item, actions).el;
+    const el = renderEntry(entry, actions);
     if (known) known.el.replaceWith(el);
-    else timeline.append(el);
-    blockEls.set(block.key, { el, sig });
+    else {
+      if (loaded) el.classList.add("fresh");
+      timeline.append(el);
+    }
+    blockEls.set(entry.key, { el, sig });
   }
+  // Typing, as a person shows it: three dots under the conversation while the bot works and asks nothing of you.
+  $("typing").hidden = !(selected !== null && model.run === "active" && needsYou(model).length === 0 && !model.takeover);
   if (nearBottom) scroller.scrollTop = scroller.scrollHeight;
-  const isEmpty = !(model.items.length > 0 && selected !== null);
+  const isEmpty = !(blockEls.size > 0 && selected !== null);
   $("empty").hidden = !isEmpty;
   const bot = rows.find((candidate) => candidate.id === selected);
+  $("greeting").textContent = bot ? `Say hello to ${bot.title}.` : greeting(new Date().getHours());
   $("hint").textContent = bot
-    ? `${bot.title} is ready. Tell it what to do; it shows you as it goes.`
-    : "Make a bot and give it a job. It keeps working and tells you when it needs you.";
+    ? "Tell it what you need in your own words. It works on its own computer and writes back when there is something to say."
+    : "Each bot is someone who works for you on their own computer. Start a conversation with one.";
   $("empty-new").hidden = selected !== null;
+  $("empty-avatar").replaceChildren(...(bot ? [avatar(bot, 44)] : []));
+  area("message").placeholder = bot ? `Message ${bot.title}` : "Message";
   document.querySelector(".main")?.setAttribute("data-empty", String(isEmpty));
   renderPinned();
-  renderNow();
   renderComposer();
   renderBanners();
   renderRail();
@@ -414,30 +477,25 @@ function renderHeader() {
   const row = rows.find((candidate) => candidate.id === selected);
   $("session-title").hidden = !row;
   if (row) {
-    $("bot-star").replaceChildren(avatar(row, 16));
+    $("bot-star").replaceChildren(avatar(row, 22));
     $("bot-name").textContent = row.title;
-    $("bot-summary").textContent = row.summary ?? (row.next ? `next: ${row.next}` : "");
+    const status = presence(
+      { run: model.run, pending: needsYou(model).length, takeover: Boolean(model.takeover), lastAt: row.last?.at ?? lastSeen(model.items) },
+      Date.now(),
+    );
+    $("bot-summary").textContent = status;
+    $("bot-summary").dataset.tone = status === "typing…" ? "live" : status === "waiting for you" || status === "you have the screen" ? "needs" : "";
   }
   document.title = titleBadge(selected ? needsYou(model).length : rows.reduce((sum, candidate) => sum + candidate.pending, 0));
 }
 
-/** The Now line: whether the agent works, needs the person, or waits while the person has the desktop. A needs-you card replaces it. */
-let nowTimer = 0;
-function renderNow() {
-  const line = nowLine(model, Date.now());
-  const now = $("now");
-  const hasCard = needsYou(model).length > 0;
-  now.hidden = (line.tone === "idle" && line.label === "") || hasCard;
-  now.dataset.tone = line.tone;
-  $("now-label").textContent = line.label;
-  $("now-detail").textContent = line.detail ? `· ${line.detail}` : "";
-  $("now-since").textContent = line.tone === "working" || line.tone === "control" ? clock(line.sinceMs) : "";
-  // The clock ticks once a second, and only while there is a clock to show.
-  if ((line.tone === "working" || line.tone === "control") && !nowTimer) nowTimer = window.setInterval(renderNow, 1000);
-  else if (line.tone !== "working" && line.tone !== "control" && nowTimer) {
-    window.clearInterval(nowTimer);
-    nowTimer = 0;
+/** When the bot last said something, from the conversation itself (the bot's info may not have it yet). */
+function lastSeen(/** @type {readonly import("./model.js").Item[]} */ items) {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = /** @type {import("./model.js").Item} */ (items[i]);
+    if (item.kind === "assistant" || item.kind === "say") return item.at;
   }
+  return null;
 }
 
 /** @type {string} */
@@ -709,7 +767,6 @@ const desk = createDesk({
     }
     $("desk-note").textContent = message;
     renderComposer();
-    renderNow();
     if (mode === "closed" || mode === "view") void refreshSessions();
   },
 });
@@ -717,12 +774,11 @@ const desk = createDesk({
 /** The chip in the top bar: the host being worked on, a star for the state, a thumbnail of the picture. */
 function renderChip() {
   const chip = $("desk-pill");
-  const line = nowLine(model, Date.now());
   const host = model.deskTrigger?.host ?? "";
   $("desk-host").textContent = host;
   chip.setAttribute("aria-label", host ? `Desk, ${host}` : "Desk");
   const mark = /** @type {SVGElement} */ (chip.querySelector(".star"));
-  mark.setAttribute("class", `star${line.tone === "working" ? " on" : line.tone === "needs" ? " needs" : ""}`);
+  mark.setAttribute("class", `star${needsYou(model).length > 0 ? " needs" : model.run === "active" ? " on" : ""}`);
 }
 
 async function openDesk(/** @type {"view" | "control"} */ kind) {
@@ -914,6 +970,17 @@ async function start() {
     else setConnection("down");
   }
   await refreshSessions();
+  // Opening the page continues the last conversation, as a chat app does; a new bot is one click away.
+  if (!location.hash) {
+    let remembered = null;
+    try {
+      remembered = localStorage.getItem(lastBotKey);
+    } catch {
+      // no storage: the bot with the latest message is opened instead
+    }
+    const id = continueWith(rows, remembered);
+    if (id) history.replaceState(null, "", `#/s/${id}`);
+  }
   route();
   setInterval(() => void pollHealth(), 5000);
   setInterval(() => void refreshSessions(), 5000);

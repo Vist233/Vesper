@@ -68,6 +68,8 @@ function info(record: SessionRecord): SessionInfo {
     ...(record.star !== undefined ? { star: record.star } : {}),
     ...(record.summary !== undefined ? { summary: record.summary } : {}),
     ...nextJob(record),
+    ...(record.notice !== undefined ? { notice: record.notice } : {}),
+    ...(record.last !== undefined ? { last: record.last } : {}),
   };
 }
 
@@ -95,6 +97,7 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
   const newId = () => `m_${randomBytes(8).toString("hex")}`;
   const log = (sessionId: string, entry: Record<string, unknown>) => deps.log?.({ module: "session-runtime", session: sessionId, ...entry });
 
+  const noticeDue = new Set<string>();
   // A due job is the bot's own instruction: a trusted signal (source system) into the same conversation (docs/18 section 3).
   const scheduler = createScheduler({
     store: deps.store,
@@ -102,6 +105,7 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     log: (entry) => deps.log?.({ module: "session-runtime", ...entry }),
     ...(deps.scheduleIntervalMs !== undefined ? { intervalMs: deps.scheduleIntervalMs } : {}),
     deliver: async (sessionId, job, late) => {
+      noticeDue.add(sessionId);
       const lateNote = late ? " It is late: the box was down when it was due." : "";
       await (await opened(sessionId)).actor.signal({
         id: `sched-${job.id}-${now()}`,
@@ -117,6 +121,8 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
     signal: (id, draft) => runtime.signal(id, draft),
     scheduler,
     personFile: join(deps.store.sharedDirectory("person"), "USER.md"),
+    takeNotice: (id) => noticeDue.delete(id),
+    readJournal: (id) => runtime.read(id),
   };
 
   function opened(id: string, fresh = false): Promise<OpenSession> {
@@ -204,6 +210,7 @@ export function createSessionRuntime(deps: SessionRuntimeDeps): SessionRuntime {
         return;
       }
       await session.actor.message(id, told, "person", refs);
+      await deps.store.update(sessionId, { last: { at: now(), who: "person", text: text.slice(0, 200) } }).catch(() => undefined);
     },
 
     async signal(sessionId, draft) {

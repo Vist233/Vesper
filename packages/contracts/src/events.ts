@@ -27,6 +27,7 @@ export const CORE_EVENT_TYPES = [
   "takeover.viewer_connected",
   "takeover.closed",
   "session.summary",
+  "session.notice",
   "schedule.changed",
 ] as const;
 

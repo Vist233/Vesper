@@ -6,6 +6,10 @@
 /** @typedef {{ placement: "split" | "stack" | "sheet", deskW: number, convW: number, railW: number, railDrawer: boolean }} DeskLayout */
 
 export const RAIL_W = 260;
+/** On a large screen (a 2K monitor) the contact list gets more room. */
+export const RAIL_W_WIDE = 320;
+const WIDE_FROM = 1700;
+const railWidth = (/** @type {number} */ vw) => (vw >= WIDE_FROM ? RAIL_W_WIDE : RAIL_W);
 export const DIVIDER_W = 9;
 /** Width of the conversation column while the person has control: the stage takes the rest. */
 export const STAGE_CONV_W = 360;
@@ -63,14 +67,14 @@ export function deskLayout(viewportWidth, railOpen, deskState, frac) {
   const drawerWindow = vw < STACK_BELOW;
   const open = deskState === "docked" || deskState === "stage";
   if (!open) {
-    const railW = railOpen && !drawerWindow ? RAIL_W : 0;
+    const railW = railOpen && !drawerWindow ? railWidth(vw) : 0;
     return { placement, deskW: 0, convW: vw - railW, railW, railDrawer: drawerWindow };
   }
   if (placement !== "split") return { placement, deskW: vw, convW: vw, railW: 0, railDrawer: true };
   if (deskState === "stage") return { placement, deskW: vw - STAGE_CONV_W, convW: STAGE_CONV_W, railW: 0, railDrawer: true };
   const { minDesk, maxDesk, minConv } = limits(vw);
   const railDrawer = vw < NARROW_BELOW;
-  const railW = railOpen && !railDrawer ? RAIL_W : 0;
+  const railW = railOpen && !railDrawer ? railWidth(vw) : 0;
   const safe = clampDeskFrac(frac, vw); // whatever was remembered, the layout never sees a number it cannot use
   const wanted = safe === null ? defaultDeskW(vw) : Math.round(safe * vw);
   const deskW = Math.max(minDesk, Math.min(wanted, maxDesk, vw - railW - minConv));

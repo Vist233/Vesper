@@ -46,6 +46,17 @@ export interface SessionRuntimeDeps {
   routerOptions?: RouterOptions;
   /** Sub-agent settings handed to the framework (default: on, with the framework's defaults). `false` turns them off. */
   subAgents?: AgentConfig["subAgents"] | false;
+  /**
+   * MCP servers for every bot, handed to the framework (`createAgent`'s `mcp`): started when a bot's agent is made, their tools
+   * named `mcp__<server>__<tool>`. Exposed directly by default: the framework's own "search" would clash with the runtime's
+   * `tool_search`.
+   */
+  mcp?: AgentConfig["mcp"];
+  /**
+   * The delivery port (docs/20 part 4.5): called with the result of a scheduled run worth telling the person. Channels (mail,
+   * chat) plug in here; the page reads the same notice from the bot's info and shows a browser notification.
+   */
+  notify?: (sessionId: string, notice: { title: string; at: number; text: string }) => void;
   /** Write a one-line summary of the person's task after each run (one small model call). The app turns it on; default off. */
   summaries?: boolean;
   /** How often the scheduler looks for due jobs (default 60 s; tests shorten it). */
@@ -72,6 +83,10 @@ export interface SessionInfo {
   summary?: string;
   /** The `when` of the bot's next scheduled job, when it has one. */
   next?: string;
+  /** The last result of a scheduled run for the person (the page shows it as a notification once). */
+  notice?: { at: number; text: string };
+  /** The last message of the conversation (the contact list shows it with its time). */
+  last?: { at: number; who: "person" | "bot"; text: string };
 }
 
 export interface SessionStatus {

@@ -26,7 +26,9 @@
     "check": "npm run boundaries && npm run typecheck && npm run lint && npm run format:check && npm test",
     "build:plugins": "node scripts/build-plugins.mjs",
     "test:web": "vitest run --config vitest.web.config.ts",
-    "journey": "docker exec ogb-box node /opt/ogb/test/journey/run.mjs"
+    "journey": "docker exec ogb-box node /opt/ogb/test/journey/run.mjs",
+    "capabilities": "docker exec ogb-box node /opt/ogb/test/capabilities/run.mjs",
+    "test:all": "sh scripts/test-all.sh"
   },
   "dependencies": {
     "sakura-agent": "0.1.2"

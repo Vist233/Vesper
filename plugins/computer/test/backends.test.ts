@@ -23,6 +23,19 @@ describe("the gui-kit adapter", () => {
     await expect(createGuiKitBackend({ run }).drag(20, 30, 80, 100)).rejects.toThrow("could not complete the drag");
   });
 
+  it("draws a path with one xdotool call: press, move through the points, release", async () => {
+    const calls: string[][] = [];
+    const run = async (command: readonly string[]) => {
+      calls.push([...command]);
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    };
+    await createGuiKitBackend({ run }).path([
+      { x: 1.4, y: 2 },
+      { x: 5, y: 6 },
+    ]);
+    expect(calls.at(-1)).toEqual(["xdotool", "mousemove", "1", "2", "mousedown", "1", "mousemove", "5", "6", "sleep", "0.01", "mouseup", "1"]);
+  });
+
   it("runs the kit's observe and act scripts with the snapshot id, and passes the extra environment of the private desktop", async () => {
     const kit = createFakeKit();
     const backend = createGuiKitBackend({

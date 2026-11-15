@@ -72,7 +72,6 @@ export function createFakeContext(overrides: Partial<PluginContext> = {}): Plugi
     dataDir: "/tmp/ws-test/data",
     sharedDataDir: "/tmp/shared/data",
     log: { info: () => {}, warn: () => {}, error: () => {} },
-    helpers: { run: async () => ({ reason: "error" as const, text: "no helper runner in the fake context" }) },
     ...overrides,
   };
 }

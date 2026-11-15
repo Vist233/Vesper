@@ -57,3 +57,25 @@ export function scriptResult<T>(value: JsonValue): T {
   if (reply.ok !== true) throw new Error(typeof reply.error === "string" ? reply.error : "the script failed");
   return reply as unknown as T;
 }
+
+/**
+ * Reads a Google results page: title, address and snippet of each organic result, and whether Google asked for a check
+ * (its "unusual traffic" page), which the person has to pass, never the agent.
+ */
+export const GOOGLE_RESULTS = `(() => {
+  if (location.pathname.startsWith("/sorry") || document.querySelector("form#captcha-form, iframe[src*='recaptcha']")) return { blocked: true, results: [] };
+  const seen = new Set();
+  const results = [];
+  for (const heading of document.querySelectorAll("a h3")) {
+    const link = heading.closest("a");
+    const url = link && link.href;
+    if (!url || !/^https?:/.test(url) || seen.has(url) || /^https?:\\/\\/(www\\.)?google\\./.test(url)) continue;
+    seen.add(url);
+    const box = link.closest("div[data-hveid], div.g, div[data-sokoban-container]") || link.parentElement;
+    const title = heading.innerText.trim();
+    const snippet = ((box && box.innerText) || "").replace(title, "").replace(/\\s+/g, " ").trim().slice(0, 300);
+    results.push({ title, url, snippet });
+    if (results.length >= 10) break;
+  }
+  return { blocked: false, results };
+})()`;

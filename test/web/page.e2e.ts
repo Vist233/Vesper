@@ -46,13 +46,13 @@ async function feed(h: Harness, session: string, fixture: keyof typeof JOURNAL_F
 }
 
 describe("the page in a real browser", () => {
-  it("starts with no bot chosen: a greeting and New bot; the sheet makes a bot with a name and a star, and its job is the first message", async () => {
+  it("opens the last conversation; New bot makes a bot with a name and a star, and its job is the first message", async () => {
     const { h, page } = await open();
     await page.goto(h.url);
-    await page.getByRole("heading", { name: /^Good (morning|afternoon|evening)\.$/ }).waitFor();
-    await expect(page.locator("#composer")).toBeHidden(); // a message goes to a bot
+    await expect.poll(() => page.url()).toMatch(/#\/s\/s_a$/); // as a chat app: it continues where the person was, not on an empty page
+    await expect(page.locator("#composer")).toBeVisible();
     expect(await page.getByLabel("Model").count()).toBe(0); // no model or profile pickers (owner's item 4)
-    await page.locator("#empty-new").click();
+    await page.getByRole("button", { name: "New bot" }).first().click();
     const sheet = page.getByRole("dialog", { name: "New bot" });
     await expect(sheet).toBeVisible();
     await expect.poll(() => sheet.getByLabel("Name").inputValue()).toBe("Vega"); // the first free preset name
@@ -91,7 +91,9 @@ describe("the page in a real browser", () => {
     const c1 = browserCall("c1", "open", "https://example.com/docs");
     await emit("tool.call", c1);
     await emit("tool.call", { id: "r1", name: "review", arguments: {}, tool: { name: "browser", action: "open" }, parentCallId: "c1" });
-    await expect(log(page).getByText("Browsing · opening example.com")).toBeVisible(); // while running
+    await expect(page.locator("#typing")).toBeVisible(); // while it works: typing, as a person shows it
+    await expect(page.locator("#bot-summary")).toHaveText("typing…");
+    expect(await page.getByText("Browsing").count()).toBe(0); // never what the work is
     await emit("tool.result", { call: { id: "r1", name: "review" }, result: { content: [] }, outcome: "ok" });
     await emit("tool.result", { call: c1, result: { content: [{ type: "text", text: "Example Domain" }] }, outcome: "ok" });
     for (const [i, action] of ["snapshot", "click", "snapshot"].entries()) {
@@ -108,8 +110,10 @@ describe("the page in a real browser", () => {
     await expect(log(page).locator(".md li")).toHaveText(["first place", "second"]);
     await expect(log(page).locator(".md strong")).toHaveText("first");
     await expect(log(page).getByText("Done. <b>not bold</b>")).toBeVisible(); // markup stays text
-    await expect(log(page).locator(".activity")).toHaveCount(1); // four calls, one line, and no phantom running row
-    await expect(log(page).locator(".activity .label")).toHaveText(/^Worked .* · 4 steps$/);
+    await expect(page.locator("#typing")).toBeHidden(); // the run ended
+    expect(await log(page).locator(".activity").count()).toBe(0); // no work lines in a conversation with a person
+    await expect(log(page).locator(".row.out .bubble .time")).toHaveText([/^\d\d:\d\d$/]); // every bubble carries its time
+    await expect(log(page).locator(".day")).toHaveText(["Today"]);
     expect(await log(page).getByText("running").count()).toBe(0);
     // no inputs or outputs on the page (owner's item 9): they are in the logs
     expect(await log(page).getByText("Example Domain").count()).toBe(0);
@@ -120,7 +124,7 @@ describe("the page in a real browser", () => {
     const { h, page, emit } = await open();
     await goTo(page, h);
     await emit("message.user", user("[signal source=system trust=trusted id=sched-j_1-1]\n| Scheduled job j_1 (daily 07:30). Check the price."));
-    await expect(log(page).getByText("Woke up on schedule (daily 07:30): Check the price.")).toBeVisible();
+    await expect(log(page).getByText("Price is 42.")).toHaveCount(0); // (sent below)
     await emit("message.assistant", assistant("[SILENT]"));
     await emit("message.assistant", assistant("Price is 42."));
     await expect(log(page).getByText("Price is 42.")).toBeVisible();
@@ -131,7 +135,7 @@ describe("the page in a real browser", () => {
     const { h, page } = await open();
     await feed(h, "s_a", "refusalAndFailure");
     await goTo(page, h);
-    await expect(log(page).locator(".activity .label")).toHaveText(/^Worked .* · 2 steps$/);
+    expect(await log(page).locator(".activity").count()).toBe(0);
     expect(
       await log(page)
         .getByText(/refused|failed/)
@@ -164,7 +168,7 @@ describe("the page in a real browser", () => {
     await goTo(page, h);
     await emit("human.question", { id: "q_1", question: "Please sign in to Bilibili", kind: "login", where: "https://passport.bilibili.com/login" });
     await expect(page.locator("#pinned").getByText("Sign in for me")).toBeVisible();
-    await expect(log(page).getByText("Asked you to sign in")).toBeVisible(); // the timeline keeps one line; the card exists once
+    await expect(log(page).locator(".bubble.asks")).toContainText("Please sign in to Bilibili"); // the question is a message of the bot; the card with the buttons exists once
     await expect(page.locator("#desk-pill")).toHaveAttribute("data-light", "true"); // the Desk button lights; the person opens it
     await page.locator("#pinned").getByRole("button", { name: "Open the browser" }).click();
     await expect(page.locator("#desk-mode")).toHaveText("You have control");
@@ -178,7 +182,7 @@ describe("the page in a real browser", () => {
     await expect.poll(() => sent(h, "done")).toHaveLength(1);
     await emit("human.answered", { id: "q_1", by: "person" });
     await expect(page.locator("#pinned")).toBeEmpty();
-    await expect(log(page).getByText(/^You signed in/)).toBeVisible();
+    await expect(log(page).locator(".bubble.asks .answered")).toHaveText("Answered"); // the question stays in the chat, marked as answered
   });
 
   it("shows approvals with Allow and Deny, and an expired one disabled", async () => {
@@ -244,7 +248,7 @@ describe("the page in a real browser", () => {
     await expect(page.getByText("waiting while held")).toHaveCount(0);
     await emit("session.error", { kind: "network", message: "The model could not be reached.", retryable: true });
     await expect(log(page).getByRole("alert")).toContainText("The model could not be reached. (network)");
-    await log(page).getByRole("button", { name: "Retry" }).click();
+    await log(page).getByRole("button", { name: "Try again" }).click();
     await expect.poll(() => sent(h, "Please try again.")).toHaveLength(1);
   });
 
@@ -258,8 +262,9 @@ describe("the page in a real browser", () => {
     await goTo(page, h);
     const rail = page.getByRole("navigation", { name: "Bots" });
     await expect(rail.getByRole("button", { name: /Needs/ })).toHaveAttribute("data-status", "needs");
-    await expect(rail.getByRole("button", { name: /Needs/ }).locator(".line")).toHaveText("Needs you");
-    await expect(rail.getByRole("button", { name: /Taxes/ }).locator(".line")).toHaveText("No task yet");
+    await expect(rail.getByRole("button", { name: /Needs/ }).locator(".line")).toHaveText("waiting for you");
+    await expect(rail.getByRole("button", { name: /Needs/ }).locator(".badge")).toHaveText("1");
+    await expect(rail.getByRole("button", { name: /Taxes/ }).locator(".line")).toHaveText(/./);
     expect(await rail.locator(".star.avatar").count()).toBe(3);
     await expect(rail.getByRole("button", { name: /Broken/ })).toHaveAttribute("data-status", "error");
     await expect(rail.getByRole("button", { name: /Taxes/ })).toHaveAttribute("data-status", "idle");
@@ -370,7 +375,8 @@ describe("the page in a real browser", () => {
     await log(page).getByText("while down").waitFor({ timeout: 20_000 });
     await emit("message.assistant", assistant("after"));
     await log(page).getByText("after", { exact: true }).waitFor();
-    expect(await page.locator("#timeline > li").allInnerTexts()).toEqual(["before 1", "before 2", "while down", "after"]);
+    const texts = await page.locator("#timeline .row .bubble > :not(.time)").allInnerTexts();
+    expect(texts.map((t) => t.trim())).toEqual(["before 1", "before 2", "while down", "after"]);
   });
 
   it("says plainly when the runtime is still starting", async () => {
@@ -411,7 +417,7 @@ describe("the page in a real browser", () => {
     await emit("takeover.opened", { since: Date.now(), workspaceId: "s-a" });
     await expect(page.locator("#composer")).toBeHidden();
     await expect(page.locator("#handback-bar")).toBeVisible();
-    await expect(page.locator("#now")).toContainText("You have control");
+    await expect(page.locator("#bot-summary")).toHaveText("you have the screen");
     // Ended elsewhere (its time limit, another tab): the runtime closes it and journals that, as the real one does.
     await expect.poll(() => h.runtime.calls).toContain("openTakeover:s_a"); // the page restored the stage
     await h.runtime.closeTakeover("s_a"); // journals takeover.closed
@@ -422,10 +428,10 @@ describe("the page in a real browser", () => {
     await expect.poll(() => sent(h, "hello again")).toHaveLength(1);
   });
 
-  it("the Now line says what the agent does and for how long, and a needs-you card takes its place; the tab title counts what waits", async () => {
+  it("the bot shows as a person: typing while it works, waiting when it asks, last seen afterwards; the tab title counts what waits", async () => {
     const { h, page, emit } = await open();
     await goTo(page, h);
-    await expect(page.locator("#now")).toBeHidden(); // idle: no line, no room
+    await expect(page.locator("#typing")).toBeHidden();
     await emit("run.started", null);
     await emit("tool.call", {
       id: "c1",
@@ -433,16 +439,23 @@ describe("the page in a real browser", () => {
       arguments: {},
       tool: { name: "browser", action: "snapshot", target: "https://space.bilibili.com/1" },
     });
-    await expect(page.locator("#now")).toContainText("Browsing");
-    await expect(page.locator("#now")).toContainText("reading the page space.bilibili.com");
-    await expect(page.locator("#now-since")).toHaveText(/^\d+:\d\d$/);
+    await expect(page.locator("#typing")).toBeVisible();
+    await expect(page.locator("#bot-summary")).toHaveText("typing…");
+    expect(
+      await log(page)
+        .getByText(/space\.bilibili|Browsing|reading the page/)
+        .count(),
+    ).toBe(0); // what it does stays out of the chat
     await emit("approval.requested", { id: "ap_1", tool: "send_mail", args: {} });
-    await expect(page.locator("#now")).toBeHidden(); // the card replaces it
+    await expect(page.locator("#typing")).toBeHidden(); // it asked: no typing, the card speaks
+    await expect(page.locator("#bot-summary")).toHaveText("waiting for you");
     await expect.poll(() => page.title()).toBe("(1) Vesper");
     await emit("approval.decided", { id: "ap_1", approved: true });
-    await expect(page.locator("#now")).toContainText("Browsing");
+    await expect(page.locator("#typing")).toBeVisible();
+    await emit("message.assistant", assistant("Sent."));
     await emit("run.finished", { reason: "end" });
-    await expect(page.locator("#now")).toBeHidden();
+    await expect(page.locator("#typing")).toBeHidden();
+    await expect(page.locator("#bot-summary")).toHaveText(/^last seen today at \d\d:\d\d$/);
     await expect.poll(() => page.title()).toBe("Vesper");
   });
 
@@ -532,6 +545,7 @@ describe("the page in a real browser", () => {
   it("drop files on the conversation to attach them (the drop target shows while dragging)", async () => {
     const { h, page } = await open();
     await goTo(page, h);
+    await expect(page.locator("#composer")).toBeVisible(); // the bot is open: files go to it
     await page.evaluate(() => {
       const main = document.querySelector(".main") as HTMLElement;
       const data = new DataTransfer();
@@ -623,7 +637,7 @@ describe("the page in a real browser", () => {
     }
     const started = Date.now();
     await goTo(page, h);
-    await expect.poll(() => page.locator("#timeline > li").count(), { timeout: 30_000 }).toBe(2000);
+    await expect.poll(() => page.locator("#timeline .row").count(), { timeout: 30_000 }).toBe(2000);
     const loadMs = Date.now() - started;
     const latency = await page.evaluate(async () => {
       const field = document.getElementById("message") as HTMLTextAreaElement;
@@ -641,7 +655,7 @@ describe("the page in a real browser", () => {
     await page.getByText("live 49").waitFor();
     console.log(`[measured] 2000 events: load to all rendered ${loadMs} ms; worst frame while typing ${latency.toFixed(1)} ms`);
     expect(latency).toBeLessThan(250);
-    expect(await page.locator("#timeline > li").count()).toBe(2050);
+    expect(await page.locator("#timeline .row").count()).toBe(2050);
   });
 
   it("works with the keyboard and has names for its controls", async () => {
@@ -661,9 +675,10 @@ describe("the page in a real browser", () => {
     expect(unnamed).toEqual([]);
     expect(await page.locator("html").getAttribute("lang")).toBe("en");
     await expect(page.locator("#composer")).toBeVisible(); // shown once the bot is open; focus() alone does not wait for that
-    await message(page).focus();
+    await message(page).click(); // a click waits until the field can take it (focus() does not)
     await page.keyboard.type("hello");
-    await page.keyboard.press("Enter");
+    await expect.poll(() => message(page).inputValue()).toBe("hello"); // the keys arrived before Enter is pressed
+    await message(page).press("Enter");
     await expect.poll(() => sent(h, "hello")).toHaveLength(1);
   });
 });

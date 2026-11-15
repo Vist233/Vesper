@@ -1,6 +1,6 @@
 # Using the browser
 
-The `browser` tool drives this workspace's browser, which keeps the person's logins. Use it after a command, an API or a web search cannot do the job. You can only use tabs you opened; helpers you start work in their own tabs. Close tabs you no longer need.
+The `browser` tool drives this workspace's browser, which keeps the person's logins. To find pages, use `search` (Google, up to 10 results with snippets) before opening anything. Use the browser after a command or an API cannot do the job. You can only use tabs you opened; helpers you start work in their own tabs. Close tabs you no longer need.
 
 ## Judge by the DOM
 - Read the page's real state with `evaluate`, then look at the screen. "The page looks changed" is never success. A `snapshot` is an observation, not the truth: it can miss hidden inputs, canvas and shadow DOM, which are the elements that block the way.

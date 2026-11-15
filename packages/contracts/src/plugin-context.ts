@@ -64,27 +64,6 @@ export interface WorkspaceHandle {
   run(command: readonly string[], options?: RunOptions): Promise<RunResult>;
 }
 
-/** What a helper agent is asked to do. The tools are the framework's `Tool` objects (typed loosely here because contracts imports nothing). */
-export interface HelperSpec {
-  /** The helper's instructions (its system prompt). */
-  instructions: string;
-  /** The one task, with everything the helper needs. */
-  task: string;
-  tools: readonly unknown[];
-  /** The helper stops after this many model turns (default 30). */
-  maxTurns?: number;
-  signal?: AbortSignal;
-}
-
-/**
- * Runs a short-lived helper agent on the session's model, in the session's files directory, under the session's safety
- * floor (review and redaction). Its conversation stays inside the helper: only the final text comes back, so a
- * tool that produces a lot (screenshots) does not fill the main agent's context.
- */
-export interface HelperRunner {
-  run(spec: HelperSpec): Promise<{ reason: "done" | "cancelled" | "paused" | "error"; text: string }>;
-}
-
 /** The only thing a plugin receives from the runtime (docs/08 section 2, rule 1). */
 export interface PluginContext {
   workspace: WorkspaceHandle;
@@ -95,5 +74,4 @@ export interface PluginContext {
   /** A directory the plugin may write that all sessions of the box share (a store for what agents hand to each other). Private to this plugin. */
   sharedDataDir: string;
   log: PluginLogger;
-  helpers: HelperRunner;
 }

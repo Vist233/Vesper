@@ -89,13 +89,13 @@ export function createCoreTools(services: CoreToolServices): Tool[] {
     tools.push({
       name: "schedule",
       description:
-        "Wakes you up later in this same conversation, so you can check something or report on your own: add (when, prompt), list, cancel (id). " +
+        "Wakes you up later in this same conversation, so you can check something or report on your own: add (when, prompt), list, cancel (id), pause (id), resume (id), run (id: now, once). " +
         "when: 'in 30m', 'every 2h', 'daily 07:30' (the box's time zone) or an ISO time. prompt: self-contained, what to do and how to report. " +
-        "When a scheduled run has nothing worth telling the person, reply exactly [SILENT].",
+        "The reply of a scheduled run reaches the person as a notification, so make it the message you want them to get. When there is nothing worth telling, reply exactly [SILENT].",
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["add", "list", "cancel"] },
+          action: { type: "string", enum: ["add", "list", "cancel", "pause", "resume", "run"] },
           when: { type: "string" },
           prompt: { type: "string" },
           id: { type: "string" },
@@ -109,12 +109,37 @@ export function createCoreTools(services: CoreToolServices): Tool[] {
         try {
           if (action === "list")
             return text(
-              JSON.stringify((await scheduler.list(sessionId)).map(({ id, when, prompt, next }) => ({ id, when, prompt, next: new Date(next).toISOString() }))),
+              JSON.stringify(
+                (await scheduler.list(sessionId)).map(({ id, when, prompt, next, paused }) => ({
+                  id,
+                  when,
+                  prompt,
+                  next: new Date(next).toISOString(),
+                  ...(paused ? { paused } : {}),
+                })),
+              ),
             );
           if (action === "cancel") {
             const id = stringArg(args, "id");
             if (!id) return text("'id' is required for cancel.", true);
-            return text((await scheduler.cancel(sessionId, id)) ? "Cancelled." : `No job '${id}'.`, true);
+            const cancelled = await scheduler.cancel(sessionId, id);
+            if (cancelled) await services.announce("schedule.changed", { cancelled: id });
+            return cancelled ? text("Cancelled.") : text(`No job '${id}'.`, true);
+          }
+          if (action === "pause" || action === "resume") {
+            const id = stringArg(args, "id");
+            if (!id) return text(`'id' is required for ${action}.`, true);
+            const job = await scheduler.setPaused(sessionId, id, action === "pause");
+            if (!job) return text(`No job '${id}'.`, true);
+            await services.announce("schedule.changed", { [action === "pause" ? "paused" : "resumed"]: id });
+            return text(action === "pause" ? "Paused." : `Resumed: next at ${new Date(job.next).toISOString()}.`);
+          }
+          if (action === "run") {
+            const id = stringArg(args, "id");
+            if (!id) return text("'id' is required for run.", true);
+            return (await scheduler.runNow(sessionId, id))
+              ? text("It runs now: it arrives as a scheduled job after this turn.")
+              : text(`No job '${id}'.`, true);
           }
           if (action === "add") {
             const when = stringArg(args, "when");
@@ -124,7 +149,7 @@ export function createCoreTools(services: CoreToolServices): Tool[] {
             await services.announce("schedule.changed", { added: { id: job.id, when: job.when, next: job.next } });
             return text(`Scheduled ${job.id}: next at ${new Date(job.next).toISOString()}.`);
           }
-          return text("'action' must be add, list or cancel.", true);
+          return text("'action' must be add, list, cancel, pause, resume or run.", true);
         } catch (error) {
           return text(error instanceof Error ? error.message : String(error), true);
         }

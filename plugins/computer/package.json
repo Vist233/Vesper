@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "The computer tool as a plugin: a helper agent drives the workspace's desktop so screenshots stay out of the main context.",
+  "description": "The desktop tool as a plugin: the agent and its sub-agents use the workspace's desktop.",
   "license": "MIT",
   "dependencies": {
     "@vesper/contracts": "*"

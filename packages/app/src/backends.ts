@@ -45,7 +45,7 @@ export function checkBackends(appRoot: string, options: { searchPath?: string } 
           },
       kit
         ? { level: "info", text: "desktop tool: the desktop kit is present" }
-        : { level: "warn", text: "desktop tool: the desktop kit is missing, so the computer tool will answer with an error" },
+        : { level: "warn", text: "desktop tool: the desktop kit is missing, so the desktop tool will answer with an error" },
       // Only where the kit is used: without the accessibility bus the desktop tool can click and type but cannot read the interface.
       ...(kit ? [{ level: "info" as const, text: "desktop accessibility bus: not started (the desktop tool cannot read the interface by name yet)" }] : []),
     ],

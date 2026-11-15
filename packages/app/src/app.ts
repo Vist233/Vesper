@@ -10,7 +10,7 @@ import { createHostWorkspaces, createSessionRuntime, type SessionRuntime } from 
 import { createFileSessionStore } from "@vesper/session-store";
 import { createWorkspaceClient } from "@vesper/workspace-client";
 import { checkBackends } from "./backends.ts";
-import { checkReferences, FIRST_PARTY_PLUGINS, loadModelConfig, loadProfileConfig, withoutUnusableProfiles } from "./config.ts";
+import { checkReferences, FIRST_PARTY_PLUGINS, loadMcpConfig, loadModelConfig, loadProfileConfig, withoutUnusableProfiles } from "./config.ts";
 import { type AppEnvironment, hasModelKey, MODEL_KEY_VARIABLE, parseEnvironment, secretValues, takeSecrets } from "./environment.ts";
 import { createLogger } from "./logger.ts";
 import { installFirstPartyPlugins } from "./plugins.ts";
@@ -86,6 +86,7 @@ export function createApp(options: AppOptions): App {
 
     const models = loadModelConfig(env);
     let profiles: ProfileConfig = loadProfileConfig(env);
+    const mcp = loadMcpConfig(env);
     const profilesFromFile = existsSync(join(env.dataDir, "config", "profiles.json"));
 
     const install = installFirstPartyPlugins({ appRoot: env.appRoot, cacheDir: join(env.dataDir, "plugin-cache") });
@@ -109,6 +110,7 @@ export function createApp(options: AppOptions): App {
       waits: env.waits,
       limits: env.limits,
       summaries: true,
+      ...(mcp ? { mcp } : {}),
       pluginHost: createPluginHost(install.installed),
       workspaces: createHostWorkspaces(workspaceHost),
       secrets,

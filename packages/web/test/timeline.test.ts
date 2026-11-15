@@ -4,109 +4,11 @@ import { describe, expect, it } from "vitest";
 import { applyEvent, createState, foldEvents, visible } from "../src/model.js";
 import { parsePrefs } from "../src/prefs.js";
 import { fmtDuration, greeting, hostOf, needsInsert, splitFences, startupWarnings, textToKeysyms } from "../src/text.js";
-import {
-  activitySummary,
-  clock,
-  composerButton,
-  deskIntent,
-  groupTimeline,
-  needsYou,
-  nowLine,
-  questionMarker,
-  railStatus,
-  titleBadge,
-  toolLabel,
-} from "../src/timeline.js";
+import { chatTimeline } from "../src/chat.js";
+import { composerButton, deskIntent, needsYou, questionMarker, railStatus, titleBadge } from "../src/timeline.js";
 
 const T0 = 1_800_000_000_000;
 const fold = (name: keyof typeof JOURNAL_FIXTURES) => foldEvents(JOURNAL_FIXTURES[name]() as any[]);
-const activities = (state: ReturnType<typeof createState>) =>
-  groupTimeline(state.items).filter((b) => b.type === "activity") as Extract<ReturnType<typeof groupTimeline>[number], { type: "activity" }>[];
-
-describe("groupTimeline on the shared journal fixtures", () => {
-  it("a plain chat turn has no activity line", () => {
-    const blocks = groupTimeline(fold("plainChatTurn").items);
-    expect(blocks.map((b) => (b.type === "item" ? b.item.kind : "activity"))).toEqual(["user", "assistant"]);
-  });
-
-  it("the owner's case: the tool calls before the question fold into ONE line, those after into another, and no row is left running", () => {
-    const state = fold("loginTakeoverJourney");
-    const groups = activities(state);
-    expect(groups.map((g) => g.tools.length)).toEqual([3, 1]); // open, snapshot, click | the snapshot after hand-back
-    const first = activitySummary(groups[0]?.tools ?? []);
-    expect(first).toMatchObject({ running: false, steps: 3, label: "Worked 7 s · 3 steps" });
-    expect(groups.flatMap((g) => g.tools).every((t) => t.outcome === "ok")).toBe(true);
-    // the review of the first call is part of that row (allowed inside), not a row of its own
-    expect(groups[0]?.tools[0]).toMatchObject({ name: "browser", review: { outcome: "allow" } });
-    expect(state.items.filter((i) => i.kind === "tool")).toHaveLength(4);
-  });
-
-  it("a refusal and a failure stay off the quiet line (owner's items 3 and 9)", () => {
-    const [group] = activities(fold("refusalAndFailure"));
-    const summary = activitySummary(group?.tools ?? []);
-    expect(summary).toEqual({ running: false, steps: 2, durationMs: expect.any(Number), waiting: 0, label: "Worked 1 s · 2 steps" });
-  });
-
-  it("keeps the order and loses nothing", () => {
-    for (const name of Object.keys(JOURNAL_FIXTURES) as (keyof typeof JOURNAL_FIXTURES)[]) {
-      const state = fold(name);
-      const flat = groupTimeline(state.items).flatMap((b) => (b.type === "item" ? [b.item] : b.tools));
-      expect(flat).toEqual(state.items);
-    }
-  });
-});
-
-describe("activitySummary and toolLabel", () => {
-  const tool = (over: Record<string, unknown>) =>
-    ({
-      kind: "tool",
-      seq: 1,
-      at: T0,
-      callId: "c",
-      name: "browser",
-      tool: { name: "browser", action: "open", target: "https://example.com/page" },
-      args: "",
-      outcome: "running",
-      endAt: 0,
-      output: "",
-      truncated: false,
-      review: null,
-      ...over,
-    }) as any;
-
-  it("says what is happening while a call runs", () => {
-    expect(activitySummary([tool({})])).toMatchObject({ running: true, label: "Browsing · opening example.com" });
-    expect(toolLabel({ name: "browser", action: "snapshot", target: "" }).text).toBe("Browsing · reading the page");
-    expect(toolLabel({ name: "bash", action: "run", target: "" }).text).toBe("Running a command · running");
-    expect(toolLabel({ name: "tool_call", action: "", target: "" }).prefix).toBe("Working");
-    expect(toolLabel({ name: "odd", action: "", target: "" }).prefix).toBe("Using odd");
-  });
-
-  it("says how long it took afterwards, with the singular for one step", () => {
-    const done = tool({ outcome: "ok", endAt: T0 + 40_000 });
-    expect(activitySummary([done]).label).toBe("Worked 40 s · 1 step");
-  });
-
-  it("counts a call that needs approval", () => {
-    expect(activitySummary([tool({ outcome: "needs_approval" })]).waiting).toBe(1);
-  });
-
-  it("an empty block does not throw", () => {
-    expect(activitySummary([])).toMatchObject({ steps: 0, running: false });
-  });
-
-  it("formats durations", () => {
-    expect([0, 400, 1000, 40_400, 60_000, 125_000, Number.NaN].map(fmtDuration)).toEqual([
-      "under a second",
-      "under a second",
-      "1 s",
-      "40 s",
-      "1 min",
-      "2 min 5 s",
-      "under a second",
-    ]);
-  });
-});
 
 describe("needsYou", () => {
   it("lists open login questions and pending approvals, not expired or answered ones", () => {
@@ -207,7 +109,7 @@ describe("properties of the folded view", () => {
   const events = (fixture: keyof typeof JOURNAL_FIXTURES) => JOURNAL_FIXTURES[fixture]() as any[];
   const names = Object.keys(JOURNAL_FIXTURES) as (keyof typeof JOURNAL_FIXTURES)[];
 
-  it("folding in halves equals folding at once, for the groups and the summaries too (every fixture, every cut)", () => {
+  it("folding in halves equals folding at once, for the chat too (every fixture, every cut)", () => {
     for (const name of names) {
       const all = events(name);
       for (let cut = 0; cut <= all.length; cut++) {
@@ -215,12 +117,12 @@ describe("properties of the folded view", () => {
         foldEvents(all.slice(cut), halves);
         const whole = foldEvents(all);
         expect(visible(halves)).toEqual(visible(whole));
-        expect(groupTimeline(halves.items)).toEqual(groupTimeline(whole.items));
+        expect(chatTimeline(halves.items, T0)).toEqual(chatTimeline(whole.items, T0));
       }
     }
   });
 
-  it("a resent overlap changes neither the groups nor their summaries (every fixture)", () => {
+  it("a resent overlap does not change the chat (every fixture)", () => {
     for (const name of names) {
       const all = events(name);
       const state = createState();
@@ -228,17 +130,22 @@ describe("properties of the folded view", () => {
         applyEvent(state, all[i]);
         if (i % 3 === 2) for (const e of all.slice(Math.max(0, i - 2), i + 1)) applyEvent(state, e); // the connection dropped and the last events came again
       }
-      expect(groupTimeline(state.items)).toEqual(groupTimeline(foldEvents(all).items));
+      expect(chatTimeline(state.items, T0)).toEqual(chatTimeline(foldEvents(all).items, T0));
     }
   });
 
-  it("groups never sit next to each other and the summary's step count equals the tools in it (random prefixes of random fixtures)", () => {
+  it("the chat never shows the work, keeps the order, and ends every group with a tail (random prefixes of random fixtures)", () => {
     fc.assert(
       fc.property(fc.constantFrom(...names), fc.nat(40), (name, cut) => {
         const state = foldEvents(events(name).slice(0, cut));
-        const blocks = groupTimeline(state.items);
-        for (let i = 1; i < blocks.length; i++) expect(blocks[i - 1]?.type === "activity" && blocks[i]?.type === "activity").toBe(false);
-        for (const block of blocks) if (block.type === "activity") expect(activitySummary(block.tools).steps).toBe(block.tools.length);
+        const entries = chatTimeline(state.items, T0);
+        const messages = entries.filter((e) => e.type === "msg");
+        for (const entry of messages) if (entry.type === "msg") expect(entry.item.kind).not.toBe("tool");
+        const seqs = messages.map((e) => (e.type === "msg" ? e.item.seq : 0));
+        expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+        const last = messages.at(-1);
+        if (last?.type === "msg") expect(last.tail).toBe(true);
+        for (let i = 1; i < entries.length; i++) expect(entries[i - 1]?.type === "day" && entries[i]?.type === "day").toBe(false);
       }),
       { numRuns: 200 },
     );
@@ -309,88 +216,7 @@ describe("needsInsert", () => {
   });
 });
 
-describe("nowLine", () => {
-  const events = (name: keyof typeof JOURNAL_FIXTURES) => JOURNAL_FIXTURES[name]() as any[];
-  const at = (offsetSeconds: number) => T0 + offsetSeconds * 1000;
-
-  it("is empty when idle, so it takes no room", () => {
-    expect(nowLine(fold("plainChatTurn"), at(10))).toEqual({ tone: "idle", label: "", detail: "", sinceMs: 0 });
-  });
-
-  it("says what the agent is doing and for how long while a call runs", () => {
-    const state = foldEvents(events("loginTakeoverJourney").slice(0, 3)); // run started, message, browser call open
-    expect(nowLine(state, at(42))).toEqual({ tone: "working", label: "Browsing", detail: "opening space.bilibili.com", sinceMs: 42_000 });
-  });
-
-  it("says Thinking when a run goes and no call is running", () => {
-    const state = foldEvents(events("plainChatTurn").slice(0, 2));
-    expect(nowLine(state, at(5))).toMatchObject({ tone: "working", label: "Thinking", sinceMs: 5000 });
-  });
-
-  it("an open question or approval turns it amber, and the card is the pinned one", () => {
-    expect(nowLine(foldEvents(events("loginTakeoverJourney").slice(0, 12)), at(20))).toMatchObject({ tone: "needs", label: "Needs you", detail: "sign in" });
-    expect(nowLine(fold("approvalsPendingAndExpired"), at(200))).toMatchObject({ tone: "needs", detail: "allow post_public?" });
-  });
-
-  it("while the person has control it says the agent is waiting", () => {
-    const all = events("loginTakeoverJourney");
-    const state = foldEvents(all.slice(0, 15)); // up to the second take-over opened
-    expect(nowLine(state, at(130))).toMatchObject({ tone: "control", label: "You have control", detail: "the agent is waiting" });
-  });
-
-  it("after a hand-back that was used, the agent first checks the page", () => {
-    const all = events("loginTakeoverJourney");
-    const state = foldEvents(all.slice(0, 20)); // hand-back, answer, message, run started
-    expect(nowLine(state, at(202))).toMatchObject({ tone: "working", label: "Back with you", detail: "checking the page" });
-    const next = foldEvents(all.slice(0, 21)); // the first call after it
-    expect(nowLine(next, at(204)).label).toBe("Browsing");
-  });
-
-  it("an error stops the star and names the cause", () => {
-    expect(nowLine(fold("modelQuotaError"), at(5))).toMatchObject({ tone: "error", label: "Stopped by an error" });
-    expect(nowLine(fold("modelQuotaError"), at(5)).detail).toContain("quota");
-  });
-
-  it("a held session says so", () => {
-    const state = foldEvents([{ v: 1, seq: 1, at: T0, sessionId: "s", type: "router.input", payload: { type: "stop", id: "x" } }] as any[]);
-    expect(nowLine(state, T0)).toMatchObject({ tone: "idle", label: "Stopped" });
-  });
-
-  it("never throws or goes negative, whatever the clock says", () => {
-    const state = foldEvents(events("loginTakeoverJourney").slice(0, 3));
-    expect(nowLine(state, 0).sinceMs).toBe(0);
-    expect(nowLine(state, Number.NaN).sinceMs).toBe(0);
-  });
-
-  it("folding in halves gives the same Now line as folding at once (every fixture, every cut, several clocks)", () => {
-    for (const name of Object.keys(JOURNAL_FIXTURES) as (keyof typeof JOURNAL_FIXTURES)[]) {
-      const all = events(name);
-      for (let cut = 0; cut <= all.length; cut++) {
-        const halves = foldEvents(all.slice(0, cut));
-        foldEvents(all.slice(cut), halves);
-        const whole = foldEvents(all);
-        for (const now of [at(0), at(30), at(500)]) expect(nowLine(halves, now)).toEqual(nowLine(whole, now));
-      }
-    }
-  });
-
-  it("a resent overlap does not change it", () => {
-    for (const name of Object.keys(JOURNAL_FIXTURES) as (keyof typeof JOURNAL_FIXTURES)[]) {
-      const all = events(name);
-      const state = createState();
-      for (let i = 0; i < all.length; i++) {
-        applyEvent(state, all[i]);
-        if (i % 3 === 2) for (const e of all.slice(Math.max(0, i - 2), i + 1)) applyEvent(state, e);
-      }
-      expect(nowLine(state, at(100))).toEqual(nowLine(foldEvents(all), at(100)));
-    }
-  });
-});
-
-describe("clock and greeting", () => {
-  it("formats minutes and seconds", () => {
-    expect([0, 999, 42_000, 125_000, 3_600_000, -5, Number.NaN].map(clock)).toEqual(["0:00", "0:00", "0:42", "2:05", "60:00", "0:00", "0:00"]);
-  });
+describe("greeting", () => {
   it("greets by the hour", () => {
     expect([0, 4, 5, 11, 12, 17, 18, 23].map(greeting)).toEqual([
       "Good evening.",

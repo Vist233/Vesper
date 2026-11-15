@@ -20,7 +20,25 @@ describe("the image", () => {
   });
 
   it("has the programs the daemon starts, and the owner's tools", async () => {
-    for (const program of ["Xvfb", "openbox", "x11vnc", "ogb-chromium", "sakura-browser-worker", "xdotool", "convert", "ffmpeg", "python3"]) {
+    for (const program of [
+      "Xvfb",
+      "openbox",
+      "x11vnc",
+      "ogb-chromium",
+      "sakura-browser-worker",
+      "xdotool",
+      "convert",
+      "ffmpeg",
+      "python3",
+      "mtpaint",
+      "gimp",
+      "soffice",
+      "pandoc",
+      "yt-dlp",
+      "jq",
+      "sqlite3",
+      "7z",
+    ]) {
       await box.sh(`command -v ${program}`);
     }
     // exactly one agent-browser: the version the owner's browser tool pins, inside that tool (D-APP-8)
