@@ -104,7 +104,7 @@ describe("the wait limits in a running session", () => {
     const question = (await payloadsOf(rig, id, "human.question"))[0] as { id: string };
     expect(await payloadsOf(rig, id, "human.expired")).toEqual([{ id: question.id, afterMinutes: 30 }]);
     expect((await rig.runtime.status(id)).held).toBe(false);
-    expect(JSON.stringify(rig.faux.requests.at(-1)?.messages)).toContain(questionTimedOut(30));
+    await vi.waitFor(() => expect(JSON.stringify(rig.faux.requests.at(-1)?.messages)).toContain(questionTimedOut(30)));
     expect(rig.liveTimers()).toBe(0);
   });
 

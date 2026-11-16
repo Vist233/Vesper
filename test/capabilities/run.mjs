@@ -122,6 +122,7 @@ const SCENARIOS = [
   },
   {
     name: "draw",
+    optional: true, // not in the default run (owner, 2026-11-16); run with --only draw
     covers: "the desktop tool (or a sub-agent with it), drawing by hand with the pointer in mtpaint, files",
     minutes: 15,
     async run(bot, ok) {
@@ -288,7 +289,7 @@ async function main() {
     return;
   }
   const only = args.includes("--only") ? (args[args.indexOf("--only") + 1] ?? "").split(",") : null;
-  const chosen = SCENARIOS.filter((s) => !only || only.includes(s.name));
+  const chosen = SCENARIOS.filter((s) => (only ? only.includes(s.name) : !s.optional));
   const profileBefore = existsSync(PERSON_FILE) ? readFileSync(PERSON_FILE, "utf8") : null;
   const results = [];
   const queue = [...chosen];
